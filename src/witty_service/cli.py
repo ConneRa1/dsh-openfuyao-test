@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    # 运维子命令复用同一个入口，避免为 CLI 再增加一个 console_script（Agent 的
+    # PATH 里已经有 witty-service）。不匹配时保持原有 uvicorn 启动行为。
+    if len(sys.argv) > 1 and sys.argv[1] == "openfuyao":
+        from witty_service.openfuyao_cli import main as openfuyao_main
+
+        sys.exit(openfuyao_main(sys.argv[2:]))
+
     parser = argparse.ArgumentParser(
         prog="witty-service",
         description="Witty Service - A service for managing agents and sessions",
@@ -89,4 +96,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

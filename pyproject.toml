@@ -81,6 +81,7 @@ packages = [
     "witty_service.channels.adapters",
     "witty_service.channels.provisioning",
     "witty_service.application",
+    "witty_service.application.openfuyao",
     "witty_service.domain",
     "witty_service.persistence",
     "witty_service.sandbox",
