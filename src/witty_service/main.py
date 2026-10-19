@@ -15,6 +15,7 @@ from witty_service.api.errors import register_exception_handlers
 from witty_service.api.insight import router as insight_router
 from witty_service.api.mcp_servers import router as mcp_servers_router
 from witty_service.api.models import router as models_router
+from witty_service.api.openfuyao import router as openfuyao_router
 from witty_service.api.scheduled_tasks import router as scheduled_tasks_router
 from witty_service.api.services import ServiceContainer, build_default_services
 from witty_service.api.skills import router as skills_router
@@ -101,6 +102,21 @@ def create_app(*, services: ServiceContainer | None = None) -> FastAPI:
                 logger.exception("Failed to prewarm skill repos on startup")
 
         threading.Thread(target=_prewarm, daemon=True).start()
+
+    @app.on_event("startup")
+    def recover_openfuyao_environments() -> None:
+        """服务重启后把中断的 Bootstrap 标记失败，避免前端永远停在进度条。"""
+        try:
+            services = app.state.services
+            service = services.get_openfuyao_service()
+            count = service.recover_stale()
+            if count:
+                logger.warning(
+                    "Recovered %d interrupted openFuyao environment(s)", count
+                )
+        except Exception:
+            # openFuyao 是增量能力，恢复失败不能阻断既有服务启动
+            logger.exception("Failed to recover openFuyao environments")
 
     @app.on_event("startup")
     def recover_stale_generations() -> None:
@@ -317,6 +333,7 @@ def create_app(*, services: ServiceContainer | None = None) -> FastAPI:
     app.include_router(agent_templates_router)
     app.include_router(cve_router)
     app.include_router(models_router)
+    app.include_router(openfuyao_router)
     app.include_router(mcp_servers_router)
     app.include_router(scheduled_tasks_router)
     app.include_router(skills_router)
