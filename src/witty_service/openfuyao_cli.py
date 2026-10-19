@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import time
@@ -278,7 +279,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
             print(json.dumps(environment, ensure_ascii=False, indent=2))
         else:
             _print_environment(environment)
-        return 0 if environment["status"] in ("ready", "bootstrapping") else 3
+        return 0 if environment["status"] not in ("failed", "cancelled") else 3
     finally:
         client.close()
 
@@ -390,6 +391,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # CLI 只输出业务结果；httpx 的逐请求 INFO 日志会淹没 Agent 可读输出。
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     parser = build_parser()
     args: Any = parser.parse_args(argv)
     try:

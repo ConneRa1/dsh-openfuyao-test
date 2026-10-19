@@ -121,6 +121,15 @@ def test_dry_run_does_not_create_environment(monkeypatch, capsys) -> None:
     assert "未创建环境" in capsys.readouterr().out
 
 
+def test_status_on_preflight_is_not_an_error(monkeypatch, capsys) -> None:
+    client = _FakeClient()
+
+    code = _run(monkeypatch, ["status"], client)
+
+    assert code == 0
+    assert "status=preflight" in capsys.readouterr().out
+
+
 def test_cancel_uses_latest_environment(monkeypatch) -> None:
     client = _FakeClient()
 
