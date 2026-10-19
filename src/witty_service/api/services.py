@@ -3,11 +3,15 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from witty_service.adapter.http_client import AdaptorHttpClient
 from witty_service.adapter.websocket_client_pool import WebSocketClientPool
 from witty_service.application.agent_manager import AgentManager
+from witty_service.application.openfuyao.environment_service import (
+    EnvironmentService,
+)
 from witty_service.application.scheduled_task_service import ScheduledTaskService
 from witty_service.application.session_manager import SessionManager
 from witty_service.channels.credential_store import ChannelCredentialStore
@@ -28,6 +32,7 @@ from witty_service.persistence.db import (
     create_sqlite_engine,
     init_db,
 )
+from witty_service.persistence.openfuyao_repository import OpenFuyaoRepository
 from witty_service.persistence.repositories import SqliteRepository
 from witty_service.sandbox.base import SandboxBackend
 from witty_service.sandbox.factory import create_sandbox_backend
@@ -59,6 +64,8 @@ class ServiceContainer:
     channel_manual_binder: ManualCredentialBinder | None = field(
         init=False, default=None
     )
+    #: openFuyao 编排服务：首次访问时构造，避免测试用 MagicMock 容器时触碰路径/DB。
+    openfuyao_service: EnvironmentService | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.session_manager = SessionManager(repository=self.repository)
@@ -135,6 +142,17 @@ class ServiceContainer:
         if self.channel_gateway.running:
             await self.channel_gateway.connect_instance(record.id)
 
+    def get_openfuyao_service(self) -> EnvironmentService:
+        if self.openfuyao_service is None:
+            settings = get_settings().openfuyao
+            self.openfuyao_service = EnvironmentService(
+                repository=OpenFuyaoRepository(self.repository.session_factory),
+                agent_repository=self.repository,
+                settings=settings,
+                workspace_root=Path(self.workspace_store.base_dir),
+            )
+        return self.openfuyao_service
+
     def get_sandbox_backend(self, sandbox_type: str) -> SandboxBackend:
         key = sandbox_type.lower()
         backend = self.sandbox_backends.get(key)
@@ -171,6 +189,8 @@ class ServiceContainer:
         return self.insight_facade
 
     async def close(self) -> None:
+        if self.openfuyao_service is not None:
+            await self.openfuyao_service.close()
         self._stop_sandbox_backends()
         if self.insight_http_client is not None:
             await self.insight_http_client.close()
