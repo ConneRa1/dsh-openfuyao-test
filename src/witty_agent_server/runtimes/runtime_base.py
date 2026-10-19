@@ -13,6 +13,9 @@ from witty_agent_server.runtimes.artifact_detector import (
     artifact_started_event,
     extract_write_arguments,
 )
+from witty_agent_server.runtimes.openfuyao_detector import (
+    build_openfuyao_open_payload,
+)
 from witty_agent_server.runtimes.usage import normalize_usage_payload
 
 logger = logging.getLogger(__name__)
@@ -46,6 +49,7 @@ class TurnEventType(StrEnum):
     QUESTION_ASKED = "question.asked"
     QUESTION_REPLIED = "question.replied"
     QUESTION_REJECTED = "question.rejected"
+    OPENFUYAO_OPEN = "openfuyao.open"
 
 
 # 终止事件：agentd/agent_manager 见到它们即结束本轮消费，用量必须早于它们下发。
@@ -114,6 +118,7 @@ class RuntimeBase(ABC):
         - ``_on_raw_event()`` — 每条原始事件映射前的预处理
         - ``_on_mapped_event()`` — 每条已去重的统一事件的后处理
         - ``_on_artifact_event()`` — 按统一契约产出 ``artifact.*`` 事件
+        - ``_on_openfuyao_event()`` — 信号文件写入成功后产出 ``openfuyao.open``
         （默认实现即可，子类一般无需覆盖）
         """
         seen_started: set[str] = set()
@@ -125,6 +130,8 @@ class RuntimeBase(ABC):
 
         # 每轮独立的 write 工具参数缓存（供 completed 阶段构建 artifact）。
         self._turn.artifact_inputs_by_call_id: dict[str, dict[str, Any]] = {}
+        # openFuyao 信号：started 阶段缓存载荷，response 成功后才下发
+        self._turn.openfuyao_payload_by_call_id: dict[str, dict[str, Any]] = {}
         self._on_turn_begin(session_key, message)
 
         for raw in client.stream_turn(session_key=session_key, message=message):
@@ -137,6 +144,7 @@ class RuntimeBase(ABC):
                 for emitted in (
                     *self._on_mapped_event(event),
                     *self._on_artifact_event(event),
+                    *self._on_openfuyao_event(event),
                 ):
                     if self._sync_usage(emitted, usage_total):
                         continue
@@ -224,6 +232,38 @@ class RuntimeBase(ABC):
                 yield {
                     "type": TurnEventType.ARTIFACT_COMPLETED,
                     "payload": artifact_payload,
+                }
+
+    def _on_openfuyao_event(
+        self, event: RuntimeTurnEvent
+    ) -> Iterator[RuntimeTurnEvent]:
+        """信号文件写入成功后产出 ``openfuyao.open``，驱动前端打开面板。
+
+        与 ``_on_artifact_event`` 同构：started 缓存载荷，response 确认非错误后
+        才下发；一次失败的写入不会误开面板。
+        """
+        event_type = event.get("type")
+        payload = event.get("payload") or {}
+        tool_name = payload.get("name") or payload.get("tool_name")
+        if tool_name != WRITE_TOOL_NAME:
+            return
+
+        if event_type == TurnEventType.TOOL_CALL_STARTED:
+            call_id = payload.get("tool_call_id") or ""
+            signal_payload = build_openfuyao_open_payload(payload.get("arguments"))
+            if signal_payload is not None:
+                self._turn.openfuyao_payload_by_call_id[call_id] = signal_payload
+            return
+
+        if event_type == TurnEventType.TOOL_CALL_RESPONSE:
+            if payload.get("is_error"):
+                return
+            call_id = payload.get("tool_call_id") or ""
+            signal_payload = self._turn.openfuyao_payload_by_call_id.pop(call_id, None)
+            if signal_payload is not None:
+                yield {
+                    "type": TurnEventType.OPENFUYAO_OPEN,
+                    "payload": signal_payload,
                 }
 
     def create_session(self, *, session_key: str) -> None:
