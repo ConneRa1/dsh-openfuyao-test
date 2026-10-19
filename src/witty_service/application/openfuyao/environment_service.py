@@ -421,6 +421,13 @@ class EnvironmentService:
         if task is not None:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(asyncio.shield(task), timeout=10)
+        current = self._repository.get(environment_id)
+        if current is not None and current.status in (
+            EnvironmentStatus.ready,
+            EnvironmentStatus.failed,
+        ):
+            # 取消与完成竞态：已经落定的终态不被覆盖。
+            return current
         return self._repository.update(
             environment_id,
             status=EnvironmentStatus.cancelled,
