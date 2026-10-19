@@ -724,3 +724,45 @@ class ChannelAccessPolicyORM(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
     )
+
+
+class OpenFuyaoEnvironmentORM(Base):
+    """一台宿主上的一个 openFuyao 管理面（MVP：一宿主一 Environment）。
+
+    ``host`` 唯一是“一宿主一归属”的数据库约束：并发创建时由唯一索引兜底，
+    服务层再把 IntegrityError 翻译成 409。``agent_id`` 不设外键，避免删除 Agent
+    时把环境与日志一起带走；环境需要可追溯。
+    """
+
+    __tablename__ = "openfuyao_environments"
+    __table_args__ = (
+        UniqueConstraint("host", name="uq_openfuyao_environments_host"),
+        Index("ix_openfuyao_environments_agent_id", "agent_id"),
+        Index("ix_openfuyao_environments_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    host: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    console_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    proxy_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    bke_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    os_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    preflight_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

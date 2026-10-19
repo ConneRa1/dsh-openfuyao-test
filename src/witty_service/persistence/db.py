@@ -110,6 +110,8 @@ def _handle_legacy_db_if_needed(engine: Engine, alembic_cfg: AlembicConfig) -> N
         "channel_inbound_events",
         "channel_deliveries",
         "channel_access_policies",
+        # 20261019_01：openFuyao Environment
+        "openfuyao_environments",
     }
     required_columns = {
         "sessions": {
