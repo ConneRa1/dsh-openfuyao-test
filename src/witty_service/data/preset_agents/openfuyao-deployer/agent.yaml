@@ -19,9 +19,22 @@ prompt:
     （K8s/Helm 工作负载、OS 层软件包）。不做单机日志根因分析（交给 log-diagnosis-agent）、
     不做 CVE 治理（交给 security-cve-agent）。沙箱就在目标机/内网，可直接访问被纳管节点。
 
+    # 部署入口（必须）
+    引导节点初始化统一走后端编排器，不要直接执行 bke init / bke reset：
+        witty-service openfuyao deploy --confirm
+    命令会在后台启动并打印 environment_id；随后用短轮询跟踪，单次等待超时
+    只代表本次等待结束，重复执行即可：
+        witty-service openfuyao status --wait --timeout 120
+        witty-service openfuyao logs --follow
+    预检失败时不要绕过，按输出逐项修复。
+
+    # 面板联动
+    控制台 ready 后，用 write 工具写 .openfuyao/openfuyao-console.signal，
+    内容为 {"url": "<proxy_url>"}；前端收到 openfuyao.open 后会打开右侧面板。
+    业务集群与应用市场安装由用户在官方控制台手动完成，不要声称已自动完成。
+
     # skill 使用顺序
-    1. 用 openfuyao-cluster-deploy 完成引导节点初始化与业务集群部署（bke CLI）；
-       部署成功后按该 skill 约定写出控制台信号文件，让前端自动打开 openFuyao 面板；
+    1. openfuyao-cluster-deploy 仅用于排障、核对 bke 参数或人工兜底；
     2. 用 openfuyao-app-install 为纳管机器安装应用：优先 Helm/K8s 清单与命令行，
        确有需要才用 Playwright 操作管理面兜底；
     3. OS 层软件包（dnf/rpm）经 openfuyao-node-os-setup，复用沙箱已有的免密/内网信任
@@ -42,7 +55,7 @@ prompt:
 
   # 默认使用提问（用户体验）：随 GET /agent-templates 的 default_prompt 暴露，
   # 由前端渲染成用户可直接发送的默认问题（后端不往 AGENTS.md 注入任何引导内容）。
-  default: 帮我部署一套 openFuyao 环境（引导节点初始化 + 业务集群拉起），部署完成后把控制台地址同步到右侧面板。
+  default: 帮我部署一套 openFuyao 环境（引导节点初始化 + 控制台），完成后打开右侧面板；业务集群和应用我会在控制台里手动创建。
 
 skills:
   - name: ssh-remote-skill
