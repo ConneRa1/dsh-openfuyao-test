@@ -1732,3 +1732,24 @@ def test_assemble_message_stream_error_event_carries_payload(
         "retryable": False,
         "detail": {"request_id": "req-1"},
     }
+
+
+def test_assemble_message_openfuyao_open_keeps_url_payload(
+    repo: SqliteRepository,
+) -> None:
+    """openfuyao.open 刷新后仍要带 url，否则面板无法恢复代理地址。"""
+    _create_artifact_message(
+        repo,
+        [
+            (
+                "openfuyao.open",
+                {"url": "http://192.0.2.10:3002/"},
+            )
+        ],
+    )
+
+    messages, _ = repo.get_messages_with_events("session-1")
+    item = messages[0]["events"][0]
+
+    assert item["type"] == "openfuyao.open"
+    assert item["payload"] == {"url": "http://192.0.2.10:3002/"}

@@ -408,6 +408,10 @@ def _assemble_message(msg: MessageORM, events: list[MessageEventORM]) -> dict[st
             # 前端刷新后凭它还原错误码/根因，而非只剩 status=error。
             item["payload"] = payload
 
+        elif evt.event_type == "openfuyao.open":
+            # 刷新后仍需 url 才能恢复面板目标；只留 type/timestamp 等于丢地址。
+            item["payload"] = payload
+
         elif evt.event_type in (
             "artifact.started",
             "artifact.delta",
