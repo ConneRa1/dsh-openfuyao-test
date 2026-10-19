@@ -92,11 +92,13 @@ def _complete_legacy_schema(
         Column("runtime_session_key", Text()),
         Column("origin", String(64)),
         UniqueConstraint(
-            "runtime_type", "runtime_session_key",
+            "runtime_type",
+            "runtime_session_key",
             name="uq_sessions_runtime_type_session_key",
         ),
         UniqueConstraint(
-            "runtime_type", "runtime_session_id",
+            "runtime_type",
+            "runtime_session_id",
             name="uq_sessions_runtime_type_session_id",
         ),
     )
@@ -145,6 +147,13 @@ def _complete_legacy_schema(
         Column("updated_at", String(64)),
     )
     _add_channel_tables(meta)
+    Table(
+        "openfuyao_environments",
+        meta,
+        Column("id", String(36), primary_key=True),
+        Column("agent_id", String(36)),
+        Column("host", String(255)),
+    )
 
 
 def _add_channel_tables(meta: MetaData) -> None:
@@ -176,8 +185,23 @@ def test_legacy_db_missing_migration_objects_skips_stamp(monkeypatch) -> None:
     """缺迁移后关键对象的 legacy 库不得 stamp(否则运行期缺列/缺表)。"""
     engine = create_engine("sqlite:///:memory:")
     meta = MetaData()
-    Table("agents", meta, Column("id", String(36), primary_key=True))  # 无 model_id/mcp_server_list
+    Table(
+        "agents", meta, Column("id", String(36), primary_key=True)
+    )  # 无 model_id/mcp_server_list
     Table("sessions", meta, Column("id", String(36), primary_key=True))  # 无 runtime_*
+    meta.create_all(engine)
+    calls: list = []
+    _stamp_spy(monkeypatch, calls)
+    _handle_legacy_db_if_needed(engine, None)
+    assert calls == []
+
+
+def test_legacy_db_missing_openfuyao_table_skips_stamp(monkeypatch) -> None:
+    """缺 openFuyao Environment 表的存量库不得 stamp（20261019_01）。"""
+    engine = create_engine("sqlite:///:memory:")
+    meta = MetaData()
+    _complete_legacy_schema(meta)
+    meta.remove(meta.tables["openfuyao_environments"])
     meta.create_all(engine)
     calls: list = []
     _stamp_spy(monkeypatch, calls)
@@ -218,11 +242,13 @@ def test_legacy_db_missing_sessions_origin_skips_stamp(monkeypatch) -> None:
         Column("runtime_session_key", Text()),
         # 缺 origin
         UniqueConstraint(
-            "runtime_type", "runtime_session_key",
+            "runtime_type",
+            "runtime_session_key",
             name="uq_sessions_runtime_type_session_key",
         ),
         UniqueConstraint(
-            "runtime_type", "runtime_session_id",
+            "runtime_type",
+            "runtime_session_id",
             name="uq_sessions_runtime_type_session_id",
         ),
     )
@@ -234,7 +260,9 @@ def test_legacy_db_missing_sessions_origin_skips_stamp(monkeypatch) -> None:
     assert calls == []
 
 
-def test_legacy_db_missing_compatibility_or_mcp_servers_skips_stamp(monkeypatch) -> None:
+def test_legacy_db_missing_compatibility_or_mcp_servers_skips_stamp(
+    monkeypatch,
+) -> None:
     """仅缺 models.compatibility 或 mcp_servers 表(Codex 复现场景)也不得 stamp。"""
     engine = create_engine("sqlite:///:memory:")
     meta = MetaData()
