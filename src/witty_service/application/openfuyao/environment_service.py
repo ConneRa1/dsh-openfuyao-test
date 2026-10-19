@@ -227,7 +227,11 @@ class EnvironmentService:
                 preflight_json=report.to_dict(),
                 os_version=_os_version(report),
                 console_url=build_console_url(host, self._settings.console_port),
-                proxy_url=build_proxy_url(host, self._settings.proxy_port),
+                proxy_url=build_proxy_url(
+                    host,
+                    self._settings.proxy_port,
+                    scheme=self._settings.proxy_scheme,
+                ),
                 error_code=None if ready else "PREFLIGHT_FAILED",
                 error_message=None if ready else _preflight_message(report),
             )
@@ -366,13 +370,21 @@ class EnvironmentService:
             self._runners.pop(environment_id, None)
 
     def _mark_ready(self, environment_id: str, result: BootstrapResult) -> None:
+        record = self._repository.get(environment_id)
+        proxy_url = result.proxy_url
+        if record is not None:
+            proxy_url = build_proxy_url(
+                record.host,
+                self._settings.proxy_port,
+                scheme=self._settings.proxy_scheme,
+            )
         self._repository.update(
             environment_id,
             status=EnvironmentStatus.ready,
             phase=BootstrapPhase.done,
             progress=100,
             console_url=result.console_url,
-            proxy_url=result.proxy_url,
+            proxy_url=proxy_url,
             bke_version=result.bke_version,
             os_version=result.os_version,
             error_code=None,

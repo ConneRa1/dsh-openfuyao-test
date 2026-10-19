@@ -43,6 +43,19 @@ Witty Service 统一配置管理
     WITTY_INSIGHT_TIMEOUT_SECONDS  insight 请求超时(秒) (默认: 10)
     WITTY_INSIGHT_BEARER_TOKEN     insight Bearer Token (可选)
 
+    # openFuyao Bootstrap 配置
+    OPENFUYAO_BKE_DOWNLOAD_URL     BKE 下载脚本地址
+    OPENFUYAO_BKE_IMAGE            在线镜像地址
+    OPENFUYAO_HOST                 覆盖本机地址（多网卡时指定）
+    OPENFUYAO_CONSOLE_PORT         控制台端口 (默认: 30010)
+    OPENFUYAO_PROXY_PORT           Nginx 网关端口 (默认: 3002)
+    OPENFUYAO_ENABLE_NTP           是否配置 NTP (默认: true)
+    OPENFUYAO_INIT_TIMEOUT_SECONDS bke init 超时 (默认: 900)
+    OPENFUYAO_CONSOLE_TIMEOUT_SECONDS 控制台就绪超时 (默认: 300)
+    OPENFUYAO_KUBECONFIG           引导集群 kubeconfig
+    OPENFUYAO_API_BASE_URL         Agent 侧 CLI 调用的后端地址
+    OPENFUYAO_WORK_DIR             日志/工作目录
+
     # IM Channel 渠道配置
     WITTY_CHANNEL_ENABLED                 渠道网关总开关 (默认: true)
     WITTY_CHANNEL_CREDENTIALS_DIR         渠道凭据目录(默认: ~/.witty/channel-credentials; 必须 0700)
@@ -523,6 +536,7 @@ class OpenFuyaoSettings:
         OPENFUYAO_HOST: 覆盖本机地址（默认自动探测）；多网卡时显式指定
         OPENFUYAO_CONSOLE_PORT: 控制台端口，默认 30010
         OPENFUYAO_PROXY_PORT: Nginx 网关端口，默认 3002
+        OPENFUYAO_PROXY_SCHEME: 网关访问协议（http/https），默认 http
         OPENFUYAO_ENABLE_NTP: 是否让 bke 配置 NTP，默认 true；UDP/123 不通时置 false
         OPENFUYAO_INIT_TIMEOUT_SECONDS: bke init 超时，默认 900
         OPENFUYAO_CONSOLE_TIMEOUT_SECONDS: 等待控制台就绪超时，默认 300
@@ -539,6 +553,7 @@ class OpenFuyaoSettings:
     host: str | None = None
     console_port: int = 30010
     proxy_port: int = 3002
+    proxy_scheme: str = "http"
     enable_ntp: bool = True
     init_timeout_seconds: float = 900.0
     console_timeout_seconds: float = 300.0
@@ -556,6 +571,7 @@ class OpenFuyaoSettings:
             host=(os.getenv("OPENFUYAO_HOST") or "").strip() or None,
             console_port=int(os.getenv("OPENFUYAO_CONSOLE_PORT", "30010")),
             proxy_port=int(os.getenv("OPENFUYAO_PROXY_PORT", "3002")),
+            proxy_scheme=os.getenv("OPENFUYAO_PROXY_SCHEME", "http").lower(),
             enable_ntp=os.getenv("OPENFUYAO_ENABLE_NTP", "true").lower()
             in ("1", "true", "yes"),
             init_timeout_seconds=float(
