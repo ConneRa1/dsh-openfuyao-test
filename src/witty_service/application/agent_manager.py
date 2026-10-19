@@ -824,7 +824,8 @@ class AgentManager:
             sandbox_handle = self._sandbox_backend.start(
                 agent_id=agent_id,
                 workspace_path=workspace_path,
-                env=runtime_config.build_env(),
+                # Agent 侧 CLI（如 openfuyao）用它识别归属；沙箱同时继承服务进程环境。
+                env={**runtime_config.build_env(), "WITTY_AGENT_ID": agent_id},
                 image_tag=runtime_config.adapter_type,
                 memory_limit=runtime_config.memory_limit,
             )
@@ -1220,7 +1221,7 @@ class AgentManager:
         sandbox_handle = self._sandbox_backend.start(
             agent_id=agent_id,
             workspace_path=agent.workspace_path,
-            env=runtime_config.build_env(),
+            env={**runtime_config.build_env(), "WITTY_AGENT_ID": agent_id},
             image_tag=runtime_config.adapter_type,
             memory_limit=runtime_config.memory_limit,
             previous_handle=state.handle if state is not None else None,
