@@ -509,6 +509,68 @@ class ChannelSettings:
 
 
 # ==============================================================================
+# openFuyao 配置
+# ==============================================================================
+
+
+@dataclass(frozen=True)
+class OpenFuyaoSettings:
+    """openFuyao Bootstrap 编排配置。
+
+    环境变量:
+        OPENFUYAO_BKE_DOWNLOAD_URL: BKE 下载脚本地址，默认官方 OBS latest
+        OPENFUYAO_BKE_IMAGE: 在线镜像地址
+        OPENFUYAO_HOST: 覆盖本机地址（默认自动探测）；多网卡时显式指定
+        OPENFUYAO_CONSOLE_PORT: 控制台端口，默认 30010
+        OPENFUYAO_PROXY_PORT: Nginx 网关端口，默认 3002
+        OPENFUYAO_ENABLE_NTP: 是否让 bke 配置 NTP，默认 true；UDP/123 不通时置 false
+        OPENFUYAO_INIT_TIMEOUT_SECONDS: bke init 超时，默认 900
+        OPENFUYAO_CONSOLE_TIMEOUT_SECONDS: 等待控制台就绪超时，默认 300
+        OPENFUYAO_KUBECONFIG: 引导集群 kubeconfig，默认 k3s 路径
+        OPENFUYAO_API_BASE_URL: CLI 调用后端 API 的地址
+        OPENFUYAO_WORK_DIR: 日志/工作目录，默认 <workspace>/openfuyao
+    """
+
+    bke_download_url: str = (
+        "https://openfuyao.obs.cn-north-4.myhuaweicloud.com/"
+        "openFuyao/bkeadm/releases/download/latest/download.sh"
+    )
+    bke_image: str = "cr.openfuyao.cn/openfuyao/bke-online-installed:latest"
+    host: str | None = None
+    console_port: int = 30010
+    proxy_port: int = 3002
+    enable_ntp: bool = True
+    init_timeout_seconds: float = 900.0
+    console_timeout_seconds: float = 300.0
+    kubeconfig: str = "/etc/rancher/k3s/k3s.yaml"
+    api_base_url: str = "http://127.0.0.1:8000"
+    work_dir: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "OpenFuyaoSettings":
+        return cls(
+            bke_download_url=os.getenv(
+                "OPENFUYAO_BKE_DOWNLOAD_URL", cls.bke_download_url
+            ),
+            bke_image=os.getenv("OPENFUYAO_BKE_IMAGE", cls.bke_image),
+            host=(os.getenv("OPENFUYAO_HOST") or "").strip() or None,
+            console_port=int(os.getenv("OPENFUYAO_CONSOLE_PORT", "30010")),
+            proxy_port=int(os.getenv("OPENFUYAO_PROXY_PORT", "3002")),
+            enable_ntp=os.getenv("OPENFUYAO_ENABLE_NTP", "true").lower()
+            in ("1", "true", "yes"),
+            init_timeout_seconds=float(
+                os.getenv("OPENFUYAO_INIT_TIMEOUT_SECONDS", "900")
+            ),
+            console_timeout_seconds=float(
+                os.getenv("OPENFUYAO_CONSOLE_TIMEOUT_SECONDS", "300")
+            ),
+            kubeconfig=os.getenv("OPENFUYAO_KUBECONFIG", "/etc/rancher/k3s/k3s.yaml"),
+            api_base_url=os.getenv("OPENFUYAO_API_BASE_URL", "http://127.0.0.1:8000"),
+            work_dir=(os.getenv("OPENFUYAO_WORK_DIR") or "").strip() or None,
+        )
+
+
+# ==============================================================================
 # 主配置类
 # ==============================================================================
 
@@ -535,6 +597,8 @@ class Settings:
     scheduler: SchedulerSettings
     #: IM Channel 渠道配置；带默认值是为了让既有测试的显式构造保持可用
     channel: ChannelSettings = field(default_factory=ChannelSettings)
+    #: openFuyao Bootstrap 配置；同样带默认值以兼容既有显式构造
+    openfuyao: OpenFuyaoSettings = field(default_factory=OpenFuyaoSettings)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -553,6 +617,7 @@ class Settings:
             runtime=RuntimeSettings.from_env(),
             scheduler=SchedulerSettings.from_env(),
             channel=ChannelSettings.from_env(),
+            openfuyao=OpenFuyaoSettings.from_env(),
         )
 
 
