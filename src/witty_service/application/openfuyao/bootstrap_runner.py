@@ -352,14 +352,22 @@ class BootstrapRunner:
         self._require_not_cancelled(phase)
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._log(f"$ {' '.join(argv)}")
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=str(self._work_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True,
-            env=self._subprocess_env(),
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(self._work_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
+                env=self._subprocess_env(),
+            )
+        except FileNotFoundError as exc:
+            raise BootstrapError(
+                "COMMAND_NOT_FOUND",
+                f"命令不存在：{argv[0]}",
+                phase=phase,
+                detail=str(exc),
+            ) from exc
         self._process = process
         tail: deque[str] = deque(maxlen=200)
         saw_marker = False
@@ -409,14 +417,22 @@ class BootstrapRunner:
         self._require_not_cancelled(phase)
         self._work_dir.mkdir(parents=True, exist_ok=True)
         self._log(f"$ {' '.join(argv)}")
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=str(self._work_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True,
-            env=self._subprocess_env(),
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(self._work_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
+                env=self._subprocess_env(),
+            )
+        except FileNotFoundError as exc:
+            raise BootstrapError(
+                "COMMAND_NOT_FOUND",
+                f"命令不存在：{argv[0]}",
+                phase=phase,
+                detail=str(exc),
+            ) from exc
         self._process = process
         try:
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
