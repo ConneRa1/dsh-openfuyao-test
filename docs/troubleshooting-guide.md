@@ -164,6 +164,7 @@ sqlite3 -header -column $DB "select id,agent_id,status,phase,progress,console_ur
 | 白屏、控制台有 JS 报错 | Next 构建产物与后端地址不匹配 | 浏览器 Console；`NEXT_PUBLIC_*` 是否重新构建 |
 | Agent 一直"思考中"或秒失败 | 模型不可用 / API Key 错 | Agent 的 `agent-server.stderr.log` |
 | 右面板空白但 3002 能开 | iframe 被 `X-Frame-Options` 拦 | `curl -I http://127.0.0.1:3002/` |
+| iframe 里显示「某 IP 响应时间过长」 | 浏览器连不上该 IP（NAT/端口转发），不是后端超时 | 见 7.7；先用浏览器直开代理地址 |
 | 右侧"未部署"但集群其实好了 | 环境状态没刷新 | `openfuyao_environments` 的 `status/phase` |
 
 ---
@@ -330,6 +331,43 @@ cat /etc/sudoers.d/90-witty-openfuyao
 # 验证（不输出密码提示即为通过）
 sudo -u witty-service sudo -n -l /usr/local/bin/bke >/dev/null && echo ok
 ```
+
+### 7.7 端口转发（VS Code SSH）下控制台 iframe 打不开
+
+**现象**：右侧面板里显示「192.168.122.146 的响应时间过长」，但集群是好的、直接
+在虚拟机里访问 `:30010` 又正常。
+
+**这是浏览器报的错，不是后端**。Chrome 在 iframe 里等待连接超时，会渲染自己的错误页
+（`ERR_CONNECTION_TIMED_OUT`），所以页面上看到的是一行地址加"响应时间过长"。
+
+**原因**：iframe 以前直接使用后端记录的内网地址 `http://192.168.122.146:3002/`。
+而你是用 VS Code 端口转发访问前端的，浏览器只知道 `localhost:3000`，
+**路由不到虚拟机的内网段** `192.168.122.x`，于是一直等到超时。
+
+**修复**：`resolveProxyUrl`（`lib/openfuyao-console.ts`）改为**跟随浏览器实际访问的
+host**，只沿用后端给的端口。现在 iframe 地址 = 你访问页面用的地址 + `:3002`。
+
+**用法变化**：需要把 **3002** 也转发出来：
+
+1. VS Code → `PORTS` 面板 → `Forward a Port` → 填 `3002`；
+2. 浏览器访问 `http://localhost:3000`，面板 iframe 就是 `http://localhost:3002/`。
+
+如果本来就是用局域网 IP（`http://192.168.122.146:3000`）访问，则和以前完全一样，
+不需要额外设置——因为页面 host 本身就是可达地址。
+
+**自检：先验证链路，再怀疑代码。**
+
+```bash
+# 在虚拟机里确认网关本身是好的
+curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:3002/   # 303/200 都正常
+```
+
+然后在**你自己的浏览器**里先直接打开 `http://localhost:3002`：看到 openFuyao 登录页，
+说明转发通了，再回面板；如果这里都打不开，就是转发没配好，与前端代码无关。
+
+**通用经验**：凡是"后端返回绝对地址给前端 iframe/跳转用"的设计，在 NAT、端口转发、
+反向代理后面都会失效。判据是：**这个地址是给浏览器用的，还是给服务器用的？**
+给浏览器用的地址必须由浏览器自己推导（`window.location`），不能由服务端写死。
 
 ---
 
