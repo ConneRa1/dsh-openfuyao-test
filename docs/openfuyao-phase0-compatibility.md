@@ -81,6 +81,30 @@ sha256sum download.sh
 
 ---
 
+### 3.1 2026-10-20 实机尝试结果（快照 snap-20261019）
+
+在快照就绪后实际执行了 `bke init`，结论是 **26.09 默认 cgroup v2 下 BKE 引导集群无法启动**：
+
+- `bke preflight init`：18 项中 16 通过，仅“主机发行版及版本”“内核兼容性”两项失败；
+- `bke init`：containerd 安装成功，k3s 容器反复重启，日志报
+  `failed to find cpu cgroup (v2)`；
+- 宿主机 `/sys/fs/cgroup` 为 cgroup2，根 `cgroup.controllers` 含 `cpu`，但
+  `cgroup.subtree_control` 无法启用 `cpu`，`/sys/fs/cgroup/cpu.max` 不存在；
+  k3s 容器内 `RootControllers()` 找不到 `cpu`，因此拒绝启动；
+- 已执行 `bke reset --all --mount --confirm` 清理，网络/端口/服务恢复正常，
+  `/bke` 已删除；`bke` 二进制保留以便重试。
+
+处理路径（按优先级）：
+
+1. **换 22.03**：快速入门基线，cgroup v1，风险最低；
+2. 26.09 上切换 cgroup v1 后重启（需改内核 cmdline，例如
+   `systemd.unified_cgroup_hierarchy=0`），再重跑 `bke init`；
+3. 仅作为实验：让 BKE 的 k3s 容器使用 host cgroup namespace
+   （`--cgroupns=host`）可让容器看到 `cpu` controller，但宿主仍缺 `cpu.max`，
+   不建议作为交付方案。
+
+在解决该兼容性问题前，Agent/面板代码无法在真实 26.09 上完成阶段 1。
+
 ## 4. 未执行项与手工验收步骤
 
 本机同时运行 witty-service、PolyMind/Next 与开发会话，`bke init` 会安装 k3s/containerd、
