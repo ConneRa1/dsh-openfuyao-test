@@ -164,6 +164,30 @@ def _read_meminfo(path: Path = Path("/proc/meminfo")) -> tuple[int, int]:
     return values.get("MemTotal", 0) // _MIB, values.get("MemAvailable", 0) // _MIB
 
 
+def _listening_ports() -> set[int] | None:
+    """读取内核的 LISTEN 端口。
+
+    非 root 时 bind 特权端口会得到 EACCES，用 bind 探测会把 80/443 误判为占用，
+    因此优先读 /proc；只有读不到时才退回 bind。
+    """
+    ports: set[int] = set()
+    for path in (Path("/proc/net/tcp"), Path("/proc/net/tcp6")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()[1:]
+        except OSError:
+            return None
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 4 or fields[3] != "0A":
+                continue
+            _, _, port_hex = fields[1].rpartition(":")
+            try:
+                ports.add(int(port_hex, 16))
+            except ValueError:
+                continue
+    return ports
+
+
 def _port_is_free(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -172,6 +196,13 @@ def _port_is_free(port: int) -> bool:
         except OSError:
             return False
     return True
+
+
+def _busy_ports() -> tuple[int, ...]:
+    listening = _listening_ports()
+    if listening is None:
+        return tuple(port for port in REQUIRED_PORTS if not _port_is_free(port))
+    return tuple(port for port in REQUIRED_PORTS if port in listening)
 
 
 def _tcp_reachable(host: str, port: int, timeout: float = 3.0) -> bool:
@@ -206,6 +237,26 @@ def _ntp_synced() -> bool | None:
     return None
 
 
+def _has_privilege() -> bool:
+    """root 直接通过；否则要求 witty-service 能免密以 root 执行 bke。"""
+    if os.geteuid() == 0:
+        return True
+    executable = shutil.which("sudo")
+    if executable is None:
+        return False
+    try:
+        result = subprocess.run(
+            [executable, "-n", "-l", "bke"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def collect_host_facts() -> HostFacts:
     os_id, os_version = _read_os_release()
     mem_total_mb, mem_available_mb = _read_meminfo()
@@ -218,7 +269,7 @@ def collect_host_facts() -> HostFacts:
 
     residues = [f"command:{name}" for name in _RESIDUE_COMMANDS if shutil.which(name)]
     residues.extend(f"path:{path}" for path in _RESIDUE_PATHS if Path(path).exists())
-    busy_ports = tuple(port for port in REQUIRED_PORTS if not _port_is_free(port))
+    busy_ports = _busy_ports()
     unreachable = tuple(
         label
         for label, host, port in NETWORK_ENDPOINTS
@@ -234,7 +285,7 @@ def collect_host_facts() -> HostFacts:
         mem_available_mb=mem_available_mb,
         disk_total_gb=disk_total_gb,
         disk_free_gb=disk_free_gb,
-        is_root=os.geteuid() == 0,
+        is_root=_has_privilege(),
         has_tar=shutil.which("tar") is not None,
         residues=tuple(residues),
         busy_ports=busy_ports,

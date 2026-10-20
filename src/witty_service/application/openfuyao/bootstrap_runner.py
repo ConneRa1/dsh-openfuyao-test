@@ -348,6 +348,12 @@ class BootstrapRunner:
         env["KUBECONFIG"] = self._settings.kubeconfig
         return env
 
+    def _privileged(self, argv: list[str]) -> list[str]:
+        """安装脚本与 bke 需要 root；后端以 witty-service 运行时经 sudo 提权。"""
+        if os.geteuid() == 0:
+            return argv
+        return ["sudo", "-n", *argv]
+
     async def _run_streaming(
         self,
         argv: list[str],
@@ -359,6 +365,7 @@ class BootstrapRunner:
         self._phase = phase
         self._require_not_cancelled(phase)
         self._work_dir.mkdir(parents=True, exist_ok=True)
+        argv = self._privileged(argv)
         self._log(f"$ {' '.join(argv)}")
         try:
             process = await asyncio.create_subprocess_exec(
@@ -424,6 +431,7 @@ class BootstrapRunner:
         self._phase = phase
         self._require_not_cancelled(phase)
         self._work_dir.mkdir(parents=True, exist_ok=True)
+        argv = self._privileged(argv)
         self._log(f"$ {' '.join(argv)}")
         try:
             process = await asyncio.create_subprocess_exec(

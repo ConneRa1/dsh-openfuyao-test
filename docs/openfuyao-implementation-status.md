@@ -29,9 +29,9 @@ Docker/K8s 残留与 30010/6443/80/443 端口均通过；OBS、镜像仓库、�
 NTP 未同步。完整记录见
 [openfuyao-phase0-compatibility.md](openfuyao-phase0-compatibility.md)。
 
-**未执行**：`bke init` 与完整快速入门（阶段 1/2/3）。原因：本机是活动开发机，
-`bke init` 会安装 k3s/containerd 并调整网络/NTP，必须先在 KVM 快照后执行。
-验收机仍需按 Phase 0 文档完成端到端手工确认。
+本机已在 KVM 快照 `snap-20261019` 后执行 `bke init`，结果见第 6 节。首次失败
+暴露了 26.09 默认 cgroup v2 与 BKE k3s 的兼容问题，已通过切 cgroup v1 解决；
+这是 26.09 的部署前置条件，不是编排代码问题。
 
 ## 3. Phase 1：后端编排
 
@@ -98,8 +98,43 @@ pnpm build       # pass
 
 ## 5. 仍需人工完成的验收
 
-1. 干净 8C/16G / 可用 ≥100 GiB / openEuler 26.09 机器，快照后执行 `bke init`；
-2. 确认 `BKE initialization is complete`、Pod 全部 Running/Completed；
-3. 浏览器打开面板，确认 iframe 显示登录页、可登录、刷新不掉；
-4. 在控制台完成阶段 2（单节点业务集群）与阶段 3（应用市场 nginx）；
-5. 记录 26.09 的兼容性偏差与耗时，失败则按决策点回退 22.03。
+1. 配置模型并实例化 `openfuyao-deployer`，在聊天里让 Agent 自行执行
+   `witty-service openfuyao deploy --confirm`（当前生产库 0 model / 0 agent）；
+2. 浏览器打开 `http://<host>:3000`，确认右侧 iframe 显示真实登录页、可登录、刷新不掉；
+3. 在控制台完成阶段 2（单节点业务集群）与阶段 3（应用市场 nginx）；
+4. 记录 26.09 的兼容性偏差与耗时，失败则按决策点回退 22.03。
+
+## 6. 26.09 实机验证（2026-10-20）
+
+前置调整：26.09 默认 cgroup v2 下，根 cgroup 的 `cgroup.controllers` 有 `cpu`，
+但子 cgroup 无法启用，BKE 的 k3s 报 `failed to find cpu cgroup (v2)` 并重启循环。
+内核参数改为 `systemd.unified_cgroup_hierarchy=0` 后重启，确认：
+
+```text
+stat -fc %T /sys/fs/cgroup   -> tmpfs（混合模式）
+/sys/fs/cgroup/cpu/cpu.cfs_quota_us -> -1
+```
+
+实跑结果（BKE `latest`，k8s v1.34.3-of.1）：
+
+- `bke preflight init` 仅 OS/内核矩阵失败，按 `OPENFUYAO_ALLOW_UNSUPPORTED_OS=true`
+  继续；`bke init` 约 4 分钟完成，出现 `BKE initialization is complete`；
+- 控制台 `:30010` 直连返回 302 到 OAuth；Pod 全部 Running/Completed；
+- 通过后端 API + CLI 走通完整链路：预检 → 安装 BKE → `bke init` → 等待控制台 →
+  `status=ready / phase=done`，CLI 退出码 0；
+- 真实控制台经 Nginx `:3002` 访问：登录页 HTTP 200，标题 `openFuyao管理平台`；
+  `X-Frame-Options` 已剥离，CSP `frame-ancestors` 含前端源，Cookie 无 `Secure`。
+
+权限模型：后端以 `witty-service` 运行，Runner 对 `bke`、`kubectl` 和下载脚本使用
+`sudo -n`；部署机需有对应 sudoers：
+
+```sudoers
+witty-service ALL=(root) NOPASSWD: /usr/local/bin/bke, /usr/bin/kubectl, /usr/bin/bash /var/lib/witty-service/.witty/openfuyao/*/download.sh
+```
+
+同时修复了非 root 下用 `bind` 探测 80/443 导致的误报，改为读
+`/proc/net/tcp{,6}` 的 LISTEN 端口。
+
+当前环境：`f39868ab-ac99-4bf9-a5ac-c27e2d0f0d82`，`console=https://192.168.122.146:30010`，
+`proxy=http://192.168.122.146:3002/`。该环境绑定的是冒烟用临时 Agent
+（无模型），仅用于验证编排与面板，不代替真实 `openfuyao-deployer` 对话验收。

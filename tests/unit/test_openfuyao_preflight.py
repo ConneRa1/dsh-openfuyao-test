@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import socket
 from dataclasses import replace
 
 from witty_service.application.openfuyao.preflight import (
     HostFacts,
     PreflightCheck,
+    _listening_ports,
     evaluate,
 )
 
@@ -116,6 +118,14 @@ def test_ntp_unknown_or_unsynchronized_only_warns() -> None:
         report = evaluate(_facts(ntp_synced=value))
         assert _by_code(report.checks, "ntp").status == "warn"
         assert report.ready is True
+
+
+def test_listening_ports_are_detected_without_binding_required_ports() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        port = sock.getsockname()[1]
+        assert port in (_listening_ports() or set())
 
 
 def test_report_serializes_checks_and_summary() -> None:

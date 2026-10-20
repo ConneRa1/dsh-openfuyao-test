@@ -1,9 +1,10 @@
 # openFuyao Phase 0：环境与兼容性门禁记录
 
-> 执行日期：2026-10-19
+> 执行日期：2026-10-19 ~ 2026-10-20
 > 执行机：KVM 虚拟机 `auto_depoly`（openEuler 26.09，aarch64）
 > 门禁命令：`witty-service openfuyao preflight`
-> 结论：**自动门禁通过（0 fail / 3 warn）**；BKE 端到端手工门禁未在本机执行，原因与复现步骤见第 4 节。
+> 结论：**自动门禁通过（0 fail / 3 warn）**；`bke init` 在切到 cgroup v1 后
+> 于 2026-10-20 实机通过，详见 3.1 与第 4 节。
 
 ---
 
@@ -94,23 +95,22 @@ sha256sum download.sh
 - 已执行 `bke reset --all --mount --confirm` 清理，网络/端口/服务恢复正常，
   `/bke` 已删除；`bke` 二进制保留以便重试。
 
-处理路径（按优先级）：
+处理路径中，**方案 2 已验证可行**：内核 cmdline 增加
+`systemd.unified_cgroup_hierarchy=0` 并重启后，宿主为 cgroup v1 混合模式
+（`/sys/fs/cgroup` 为 tmpfs，`/sys/fs/cgroup/cpu/cpu.cfs_quota_us` 存在）。
+2026-10-20 09:52 重跑 `bke init`，约 4 分钟完成，出现
+`BKE initialization is complete`，控制台 `:30010` 返回 302 到 OAuth，Pod 全部
+Running/Completed。`bke preflight init` 仍只有 OS/内核矩阵两项失败，需
+`OPENFUYAO_ALLOW_UNSUPPORTED_OS=true` 放行。
 
-1. **换 22.03**：快速入门基线，cgroup v1，风险最低；
-2. 26.09 上切换 cgroup v1 后重启（需改内核 cmdline，例如
-   `systemd.unified_cgroup_hierarchy=0`），再重跑 `bke init`；
-3. 仅作为实验：让 BKE 的 k3s 容器使用 host cgroup namespace
-   （`--cgroupns=host`）可让容器看到 `cpu` controller，但宿主仍缺 `cpu.max`，
-   不建议作为交付方案。
+备选仍是 **换 22.03**（快速入门基线，风险最低）；`--cgroupns=host` 仅作实验，
+不推荐交付。
 
-在解决该兼容性问题前，Agent/面板代码无法在真实 26.09 上完成阶段 1。
+## 4. 实机步骤与待办
 
-## 4. 未执行项与手工验收步骤
-
-本机同时运行 witty-service、PolyMind/Next 与开发会话，`bke init` 会安装 k3s/containerd、
-调整网络/NTP，属于宿主级破坏性操作。按
-[openfuyao-host-reset-runbook.md](openfuyao-host-reset-runbook.md) 的要求，必须先做虚拟机快照；
-本次未在活动开发机上执行。验收机按以下顺序完成：
+本机在快照 `snap-20261019` 后执行了 `bke init`（会安装 k3s/containerd、调整网络/NTP，
+属于宿主级破坏性操作）。回退流程见
+[openfuyao-host-reset-runbook.md](openfuyao-host-reset-runbook.md)。后续机器按以下顺序：
 
 1. 准备干净 8C/16G、可用 ≥100 GiB、openEuler 26.09 虚拟机，并做快照；
 2. 运行 `witty-service openfuyao preflight`，要求 0 FAIL；
