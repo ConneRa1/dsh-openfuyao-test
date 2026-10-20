@@ -32,6 +32,7 @@ from typing import Any
 import httpx
 
 from witty_service.application.openfuyao.preflight import (
+    Gate,
     PreflightCheck,
     PreflightReport,
     run_preflight,
@@ -285,7 +286,7 @@ def _finish(
 
 
 def _cmd_preflight(args: argparse.Namespace) -> int:
-    report = run_preflight()
+    report = run_preflight(Gate(args.gate))
     if args.json:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
     else:
@@ -473,6 +474,7 @@ def _report_from_dict(report: dict[str, Any]) -> PreflightReport:
         host=report["host"],
         checked_at=report["checked_at"],
         checks=checks,
+        gate=report.get("gate") or Gate.bootstrap.value,
     )
 
 
@@ -495,7 +497,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    preflight = subparsers.add_parser("preflight", help="只读宿主机快检")
+    preflight = subparsers.add_parser(
+        "preflight",
+        help="只读门禁：bootstrap=干净宿主，node=加入业务集群",
+    )
+    preflight.add_argument(
+        "--gate",
+        choices=[gate.value for gate in Gate],
+        default=Gate.bootstrap.value,
+        help="门禁场景（默认 bootstrap）",
+    )
     preflight.add_argument("--json", action="store_true", help="输出 JSON")
     preflight.set_defaults(handler=_cmd_preflight)
 

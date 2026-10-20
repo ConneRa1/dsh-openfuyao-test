@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from witty_service import openfuyao_cli as cli
+from witty_service.application.openfuyao.preflight import Gate
 
 _ENVIRONMENT = {
     "id": "env-1",
@@ -265,14 +266,27 @@ def test_status_reports_failed_environment_as_terminal_failure(
 
 def test_preflight_exit_code_follows_gate_result(monkeypatch, capsys) -> None:
     monkeypatch.setattr(
-        cli, "run_preflight", lambda: cli._report_from_dict(_report(ready=False))
+        cli, "run_preflight", lambda _gate: cli._report_from_dict(_report(ready=False))
     )
 
     assert cli.main(["preflight"]) == 3
 
     monkeypatch.setattr(
-        cli, "run_preflight", lambda: cli._report_from_dict(_report(ready=True))
+        cli, "run_preflight", lambda _gate: cli._report_from_dict(_report(ready=True))
     )
 
     assert cli.main(["preflight"]) == 0
     assert "通过" in capsys.readouterr().out
+
+
+def test_preflight_gate_option_is_forwarded(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake(gate: object) -> cli.PreflightReport:
+        seen["gate"] = gate
+        return cli._report_from_dict(_report(ready=True))
+
+    monkeypatch.setattr(cli, "run_preflight", fake)
+
+    assert cli.main(["preflight", "--gate", "node"]) == 0
+    assert seen["gate"] == Gate.node  # type: ignore[comparison-overlap]

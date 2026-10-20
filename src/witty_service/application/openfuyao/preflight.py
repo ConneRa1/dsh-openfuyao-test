@@ -1,8 +1,19 @@
-"""openFuyao 宿主机快检（不依赖 bke）。
+"""openFuyao 门禁检查（不依赖 bke）。
 
 预检拆成两段：本模块只做**快检**，`bke preflight init` 由 Runner 在 BKE 安装后执行。
 快检的原则是只读：不安装软件、不启停服务、不改网络，因此可以在 API 的创建环境
 请求里直接执行，也允许用户反复重试。
+
+**两套门禁不能混用**（``Gate``）：
+
+- ``bootstrap``：从零装引导节点。要求宿主机**干净**（无 docker/k3s 残留）且
+  30010/6443/80/443 全空闲。阶段 1 跑完后 ``/etc/rancher/k3s`` 必然存在，
+  所以它对“已经装过”的宿主**必然失败**，这是预期行为；
+- ``node``：把一台已存在的机器加入业务集群。恰恰**不能**包含清洁度检查
+  （宿主上本来就有引导集群），只校验 hostname RFC 1123、内存、磁盘、6443。
+
+阶段 2 的节点校验请用 ``evaluate(facts, gate=Gate.node)``，不要再调默认 gate；
+SSH 可达性与 OS/内核矩阵分别由连接层与 ``bke preflight`` 负责，不在本模块。
 
 所有检查结果都结构化为 ``PreflightCheck``：``fail`` 阻止继续，``warn`` 允许继续但
 必须在 UI 明示（例如内存低于 16 GiB、NTP 未同步）。
@@ -13,17 +24,31 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 import shutil
 import socket
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
 CheckStatus = Literal["pass", "warn", "fail"]
+
+
+class Gate(StrEnum):
+    """门禁场景：决定“哪些检查项适用、阈值是多少”。
+
+    ``bootstrap`` 与 ``node`` 的检查项集合是**刻意不同**的：前者要求干净宿主，
+    后者要求“能加入业务集群”，二者的清洁度前提正好相反。
+    """
+
+    bootstrap = "bootstrap"
+    node = "node"
+
 
 #: 必须可达的安装源（TCP 443 即可，不校验 HTTP 状态码）
 NETWORK_ENDPOINTS: tuple[tuple[str, str, int], ...] = (
@@ -32,8 +57,14 @@ NETWORK_ENDPOINTS: tuple[tuple[str, str, int], ...] = (
     ("应用市场", "charts.bitnami.com", 443),
 )
 
-#: BKE 初始化会占用的端口
-REQUIRED_PORTS: tuple[int, ...] = (30010, 6443, 80, 443)
+#: 采集时探测的端口集合（两套门禁的并集，采集一次供两边判定）
+PROBE_PORTS: tuple[int, ...] = (30010, 6443, 80, 443)
+
+#: Bootstrap 门禁要求全部空闲（控制台、业务 API、ingress）
+BOOTSTRAP_REQUIRED_PORTS: tuple[int, ...] = PROBE_PORTS
+
+#: Node 门禁只关心业务集群 API 端口；30010 在 AIO 上本来就被控制台占着
+NODE_REQUIRED_PORTS: tuple[int, ...] = (6443,)
 
 _RESIDUE_COMMANDS = ("docker", "k3s", "containerd")
 _RESIDUE_PATHS = ("/var/lib/rancher", "/etc/rancher/k3s", "/var/lib/docker")
@@ -47,6 +78,8 @@ class HostFacts:
     """快检需要的宿主机事实；测试可直接构造，无需真的探测本机。"""
 
     host: str
+    #: 节点主机名；kubelet 会把它作为节点名，必须满足 RFC 1123
+    hostname: str
     os_id: str
     os_version: str
     arch: str
@@ -86,6 +119,8 @@ class PreflightReport:
     host: str
     checked_at: str
     checks: tuple[PreflightCheck, ...]
+    #: 这份报告属于哪套门禁；旧的构造点不传时按 bootstrap 处理
+    gate: str = Gate.bootstrap.value
 
     @property
     def failed(self) -> tuple[PreflightCheck, ...]:
@@ -110,6 +145,7 @@ class PreflightReport:
     def to_dict(self) -> dict[str, Any]:
         return {
             "host": self.host,
+            "gate": self.gate,
             "checked_at": self.checked_at,
             "ready": self.ready,
             "summary": self.summary(),
@@ -201,8 +237,8 @@ def _port_is_free(port: int) -> bool:
 def _busy_ports() -> tuple[int, ...]:
     listening = _listening_ports()
     if listening is None:
-        return tuple(port for port in REQUIRED_PORTS if not _port_is_free(port))
-    return tuple(port for port in REQUIRED_PORTS if port in listening)
+        return tuple(port for port in PROBE_PORTS if not _port_is_free(port))
+    return tuple(port for port in PROBE_PORTS if port in listening)
 
 
 def _tcp_reachable(host: str, port: int, timeout: float = 3.0) -> bool:
@@ -277,6 +313,7 @@ def collect_host_facts() -> HostFacts:
     )
     return HostFacts(
         host=detect_host_ip(),
+        hostname=socket.gethostname(),
         os_id=os_id,
         os_version=os_version,
         arch=platform.machine(),
@@ -448,20 +485,28 @@ def _evaluate_residue(facts: HostFacts) -> PreflightCheck:
     )
 
 
-def _evaluate_ports(facts: HostFacts) -> PreflightCheck:
-    if facts.busy_ports:
+def _evaluate_ports(
+    facts: HostFacts, required: tuple[int, ...] = BOOTSTRAP_REQUIRED_PORTS
+) -> PreflightCheck:
+    """只看``required``里被占用的端口。
+
+    ``facts.busy_ports`` 是 PROBE_PORTS 与真实 LISTEN 的交集，按场景再过滤一次，
+    这样 AIO 上被控制台占用的 30010 不会让 Node 门禁失败。
+    """
+    busy = tuple(port for port in facts.busy_ports if port in required)
+    if busy:
         return _check(
             "ports",
             "端口占用",
             "fail",
-            "以下端口已被占用：" + ", ".join(str(port) for port in facts.busy_ports),
-            busy_ports=list(facts.busy_ports),
+            "以下端口已被占用：" + ", ".join(str(port) for port in busy),
+            busy_ports=list(busy),
         )
     return _check(
         "ports",
         "端口占用",
         "pass",
-        "30010/6443/80/443 均空闲",
+        "/".join(str(port) for port in required) + " 均空闲",
     )
 
 
@@ -500,9 +545,83 @@ def _evaluate_ntp(facts: HostFacts) -> PreflightCheck:
     )
 
 
-def evaluate(facts: HostFacts) -> PreflightReport:
-    """把宿主机事实映射为检查项（纯函数，便于单测覆盖门禁策略）。"""
-    checks = (
+_RFC1123_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+
+def valid_node_hostname(name: str) -> bool:
+    """kubelet 用主机名做节点名，必须满足 RFC 1123 子域名规则。
+
+    下划线是最常见的踩坑（``auto_depoly``）：控制面静态 Pod 名会带上节点名，
+    kubelet 拒绝加载 ``etcd-auto_depoly``，表现为 6443 一直不监听。
+    """
+    if not name or len(name) > 253:
+        return False
+    labels = name.split(".")
+    return all(
+        0 < len(label) <= 63 and bool(_RFC1123_LABEL.match(label)) for label in labels
+    )
+
+
+def _evaluate_hostname(facts: HostFacts) -> PreflightCheck:
+    name = (facts.hostname or "").strip()
+    if valid_node_hostname(name):
+        return _check("hostname", "节点主机名", "pass", name, hostname=name)
+    return _check(
+        "hostname",
+        "节点主机名",
+        "fail",
+        f"主机名 {name or '(空)'} 不符合 RFC 1123（仅允许小写字母/数字/'-'/'.'，"
+        "且不能含 '_'）；kubelet 会拒绝加载静态 Pod，控制面无法启动",
+        hostname=name,
+    )
+
+
+def _evaluate_node_memory(facts: HostFacts) -> PreflightCheck:
+    total_gib = round(facts.mem_total_mb / _MIB, 1)
+    available_gib = round(facts.mem_available_mb / _MIB, 1)
+    detail = {
+        "total_mb": facts.mem_total_mb,
+        "available_mb": facts.mem_available_mb,
+    }
+    if facts.mem_total_mb < 16 * _MIB:
+        return _check(
+            "memory",
+            "内存",
+            "fail",
+            f"总内存 {total_gib} GiB，低于业务集群节点最低 16 GiB",
+            **detail,
+        )
+    return _check(
+        "memory",
+        "内存",
+        "pass",
+        f"总内存 {total_gib} GiB，可用 {available_gib} GiB",
+        **detail,
+    )
+
+
+def _evaluate_node_disk(facts: HostFacts) -> PreflightCheck:
+    detail = {"total_gb": facts.disk_total_gb, "free_gb": facts.disk_free_gb}
+    if facts.disk_free_gb < 20:
+        return _check(
+            "disk",
+            "系统盘",
+            "fail",
+            f"可用 {facts.disk_free_gb} GiB，低于业务集群节点最低 20 GiB",
+            **detail,
+        )
+    return _check(
+        "disk",
+        "系统盘",
+        "pass",
+        f"总 {facts.disk_total_gb} GiB、可用 {facts.disk_free_gb} GiB",
+        **detail,
+    )
+
+
+def evaluate_bootstrap(facts: HostFacts) -> tuple[PreflightCheck, ...]:
+    """从零装引导节点：干净宿主 + 控制台/业务/ingress 端口全空闲。"""
+    return (
         _evaluate_os(facts),
         _evaluate_arch(facts),
         _evaluate_cpu(facts),
@@ -525,13 +644,41 @@ def evaluate(facts: HostFacts) -> PreflightReport:
         _evaluate_network(facts),
         _evaluate_ntp(facts),
     )
-    return PreflightReport(
-        host=facts.host,
-        checked_at=datetime.now(UTC).isoformat(),
-        checks=checks,
+
+
+def evaluate_node(facts: HostFacts) -> tuple[PreflightCheck, ...]:
+    """把一台机器加入业务集群：**不检查清洁度**，宿主上本来就有引导集群。
+
+    OS/内核矩阵交给 ``bke preflight``，SSH 可达性交给连接层；这里只放能在
+    已采集的宿主机事实上判定的四项（方案 §5.2 第 2 条）。
+    """
+    return (
+        _evaluate_hostname(facts),
+        _evaluate_node_memory(facts),
+        _evaluate_node_disk(facts),
+        _evaluate_ports(facts, NODE_REQUIRED_PORTS),
     )
 
 
-def run_preflight() -> PreflightReport:
-    """采集本机事实并执行快检；只读，可重复调用。"""
-    return evaluate(collect_host_facts())
+_EVALUATORS = {
+    Gate.bootstrap: evaluate_bootstrap,
+    Gate.node: evaluate_node,
+}
+
+
+def evaluate(facts: HostFacts, *, gate: Gate = Gate.bootstrap) -> PreflightReport:
+    """把宿主机事实映射为检查项（纯函数，便于单测覆盖门禁策略）。
+
+    ``gate`` 决定适用哪套检查项；不要在阶段 2 复用 ``bootstrap`` 去校验节点。
+    """
+    return PreflightReport(
+        host=facts.host,
+        checked_at=datetime.now(UTC).isoformat(),
+        checks=_EVALUATORS[gate](facts),
+        gate=gate.value,
+    )
+
+
+def run_preflight(gate: Gate = Gate.bootstrap) -> PreflightReport:
+    """采集本机事实并执行门禁；只读，可重复调用。"""
+    return evaluate(collect_host_facts(), gate=gate)

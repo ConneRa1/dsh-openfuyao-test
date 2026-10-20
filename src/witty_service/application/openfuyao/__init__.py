@@ -6,6 +6,10 @@
 
 from __future__ import annotations
 
-__all__ = ["PreflightReport", "run_preflight"]
+__all__ = ["Gate", "PreflightReport", "run_preflight"]
 
-from witty_service.application.openfuyao.preflight import PreflightReport, run_preflight
+from witty_service.application.openfuyao.preflight import (
+    Gate,
+    PreflightReport,
+    run_preflight,
+)
