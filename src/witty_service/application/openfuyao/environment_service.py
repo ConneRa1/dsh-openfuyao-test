@@ -23,6 +23,11 @@ from witty_service.application.openfuyao.console_health import (
     build_proxy_url,
     check_console,
 )
+from witty_service.application.openfuyao.log_tail import (
+    DEFAULT_CHUNK_BYTES,
+    LogPage,
+    read_log_page,
+)
 from witty_service.application.openfuyao.preflight import (
     PreflightReport,
     detect_host_ip,
@@ -48,8 +53,6 @@ from witty_service.persistence.openfuyao_repository import (
 
 logger = logging.getLogger(__name__)
 
-_LOG_CHUNK_BYTES = 64 * 1024
-
 
 class AgentLookup(Protocol):
     def get_agent(self, agent_id: str) -> Any | None: ...
@@ -73,22 +76,6 @@ class CreateResult:
     preflight: PreflightReport
     plan: tuple[dict[str, str | int], ...]
     created: bool
-
-
-@dataclass(frozen=True, slots=True)
-class LogPage:
-    cursor: int
-    next_cursor: int
-    lines: list[str]
-    eof: bool
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "cursor": self.cursor,
-            "next_cursor": self.next_cursor,
-            "lines": self.lines,
-            "eof": self.eof,
-        }
 
 
 def _now() -> datetime:
@@ -451,26 +438,16 @@ class EnvironmentService:
         environment_id: str,
         *,
         cursor: int = 0,
-        limit_bytes: int = _LOG_CHUNK_BYTES,
+        limit_bytes: int = DEFAULT_CHUNK_BYTES,
     ) -> LogPage:
         self.get_environment(environment_id)
-        path = self._work_dir / environment_id / "bootstrap.log"
-        if not path.exists():
-            return LogPage(cursor=cursor, next_cursor=cursor, lines=[], eof=True)
-        with path.open("rb") as handle:
-            handle.seek(max(0, cursor))
-            chunk = handle.read(max(1, limit_bytes))
-            size = path.stat().st_size
-        end = chunk.rfind(b"\n") + 1
-        complete = chunk[:end]
-        lines = complete.decode("utf-8", errors="replace").splitlines()
-        next_cursor = max(0, cursor) + end
-        return LogPage(
-            cursor=cursor,
-            next_cursor=next_cursor,
-            lines=lines,
-            eof=next_cursor >= size,
+        return read_log_page(
+            self.log_path(environment_id), cursor=cursor, limit_bytes=limit_bytes
         )
+
+    def log_path(self, environment_id: str) -> Path:
+        """日志落盘位置；与 Runner 的 ``<work_dir>/<env>/bootstrap.log`` 对齐。"""
+        return self._work_dir / environment_id / "bootstrap.log"
 
     def recover_stale(self) -> int:
         return self._repository.recover_interrupted()

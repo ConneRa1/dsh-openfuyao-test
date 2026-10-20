@@ -28,6 +28,7 @@ from witty_service.application.openfuyao.console_health import (
     build_proxy_url,
     check_console,
 )
+from witty_service.application.openfuyao.log_tail import truncate_log
 from witty_service.application.openfuyao.preflight import (
     PreflightReport,
     run_preflight,
@@ -109,7 +110,7 @@ class BootstrapRunner:
 
     async def run(self, *, preflight: PreflightReport | None = None) -> BootstrapResult:
         self._work_dir.mkdir(parents=True, exist_ok=True)
-        self._log_path.write_text("", encoding="utf-8")
+        truncate_log(self._log_path)
         self._log_handle = self._log_path.open("a", encoding="utf-8", buffering=1)
         try:
             report = preflight or run_preflight()
