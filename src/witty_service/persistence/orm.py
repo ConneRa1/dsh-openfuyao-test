@@ -766,3 +766,132 @@ class OpenFuyaoEnvironmentORM(Base):
     finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class OpenFuyaoClusterORM(Base):
+    """阶段 2：业务集群（1 个本地 master + N 个已有 worker）。"""
+
+    __tablename__ = "openfuyao_clusters"
+    __table_args__ = (
+        UniqueConstraint("name", name="uq_openfuyao_clusters_name"),
+        Index("ix_openfuyao_clusters_agent_id", "agent_id"),
+        Index("ix_openfuyao_clusters_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    agent_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    #: 可以没有 Environment（预检/只读场景），因此可空。
+    environment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    name: Mapped[str] = mapped_column(String(63), nullable=False)
+    namespace: Mapped[str] = mapped_column(String(63), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    expected_node_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1
+    )
+    kubeconfig_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    endpoint: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    preflight_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class OpenFuyaoClusterNodeORM(Base):
+    """阶段 2：集群节点（不存密码，只存 IP/hostname/角色与每节点结果）。"""
+
+    __tablename__ = "openfuyao_cluster_nodes"
+    __table_args__ = (
+        UniqueConstraint("cluster_id", "ip", name="uq_openfuyao_cluster_nodes_ip"),
+        UniqueConstraint(
+            "cluster_id", "hostname", name="uq_openfuyao_cluster_nodes_hostname"
+        ),
+        Index("ix_openfuyao_cluster_nodes_cluster_id", "cluster_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    cluster_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("openfuyao_clusters.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ip: Mapped[str] = mapped_column(String(64), nullable=False)
+    hostname: Mapped[str] = mapped_column(String(253), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, nullable=False, default=22)
+    username: Mapped[str] = mapped_column(String(64), nullable=False, default="root")
+    #: master / worker；渲染时展开为 BKE 的 role 列表
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="worker")
+    is_local: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    phase: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+
+
+class OpenFuyaoAppORM(Base):
+    """阶段 3：业务集群上的应用（helm release + 验证结果）。"""
+
+    __tablename__ = "openfuyao_apps"
+    __table_args__ = (
+        UniqueConstraint(
+            "cluster_id",
+            "namespace",
+            "release_name",
+            name="uq_openfuyao_apps_release",
+        ),
+        Index("ix_openfuyao_apps_cluster_id", "cluster_id"),
+        Index("ix_openfuyao_apps_agent_id", "agent_id"),
+        Index("ix_openfuyao_apps_status", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    cluster_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("openfuyao_clusters.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    agent_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    namespace: Mapped[str] = mapped_column(String(63), nullable=False)
+    release_name: Mapped[str] = mapped_column(String(63), nullable=False)
+    repo_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    chart_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    chart_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    values_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    image_override: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    phase: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    node_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verify_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

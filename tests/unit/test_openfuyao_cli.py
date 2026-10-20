@@ -290,3 +290,13 @@ def test_preflight_gate_option_is_forwarded(monkeypatch) -> None:
 
     assert cli.main(["preflight", "--gate", "node"]) == 0
     assert seen["gate"] == Gate.node  # type: ignore[comparison-overlap]
+
+
+def test_exit_for_error_maps_preflight_codes_to_3() -> None:
+    from witty_service.domain.openfuyao import ErrorCode, ExitCode
+    from witty_service.openfuyao_cli import _exit_for_error
+
+    assert _exit_for_error(ErrorCode.HOSTNAME_INVALID.value) is ExitCode.PREFLIGHT_FAILED
+    assert _exit_for_error(ErrorCode.NODE_CREDENTIAL_MISSING.value) is ExitCode.PREFLIGHT_FAILED
+    assert _exit_for_error(ErrorCode.API_ERROR.value) is ExitCode.ERROR
+    assert _exit_for_error("SOMETHING_ELSE") is ExitCode.ERROR

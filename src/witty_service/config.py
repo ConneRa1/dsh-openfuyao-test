@@ -563,6 +563,20 @@ class OpenFuyaoSettings:
     kubeconfig: str = "/etc/rancher/k3s/k3s.yaml"
     api_base_url: str = "http://127.0.0.1:8000"
     work_dir: str | None = None
+    #: 业务集群 kubeconfig（BKE 创建时写入；集群级 kubectl 校验用）
+    cluster_kubeconfig: str = "/etc/kubernetes/admin.conf"
+    #: 节点凭据文件（0600，YAML：ip -> {username, password}）；密码不入库
+    nodes_credential_file: str = (
+        "/var/lib/witty-service/.witty/openfuyao/nodes.cred"
+    )
+    #: bke preflight cluster-create 超时（多节点 SSH 检查较慢）
+    cluster_preflight_timeout_seconds: float = 660.0
+    #: bke cluster create 超时
+    cluster_create_timeout_seconds: float = 1500.0
+    #: 创建后等待 CR/节点 Ready 的超时
+    cluster_ready_timeout_seconds: float = 1800.0
+    #: 应用安装（helm + Pod Ready）超时
+    app_install_timeout_seconds: float = 900.0
 
     @classmethod
     def from_env(cls) -> "OpenFuyaoSettings":
@@ -590,6 +604,25 @@ class OpenFuyaoSettings:
             kubeconfig=os.getenv("OPENFUYAO_KUBECONFIG", "/etc/rancher/k3s/k3s.yaml"),
             api_base_url=os.getenv("OPENFUYAO_API_BASE_URL", "http://127.0.0.1:8000"),
             work_dir=(os.getenv("OPENFUYAO_WORK_DIR") or "").strip() or None,
+            cluster_kubeconfig=os.getenv(
+                "OPENFUYAO_CLUSTER_KUBECONFIG", "/etc/kubernetes/admin.conf"
+            ),
+            nodes_credential_file=os.getenv(
+                "OPENFUYAO_NODES_CREDENTIAL_FILE",
+                "/var/lib/witty-service/.witty/openfuyao/nodes.cred",
+            ),
+            cluster_preflight_timeout_seconds=float(
+                os.getenv("OPENFUYAO_CLUSTER_PREFLIGHT_TIMEOUT_SECONDS", "660")
+            ),
+            cluster_create_timeout_seconds=float(
+                os.getenv("OPENFUYAO_CLUSTER_CREATE_TIMEOUT_SECONDS", "1500")
+            ),
+            cluster_ready_timeout_seconds=float(
+                os.getenv("OPENFUYAO_CLUSTER_READY_TIMEOUT_SECONDS", "1800")
+            ),
+            app_install_timeout_seconds=float(
+                os.getenv("OPENFUYAO_APP_INSTALL_TIMEOUT_SECONDS", "900")
+            ),
         )
 
 

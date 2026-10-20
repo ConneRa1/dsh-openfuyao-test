@@ -104,3 +104,199 @@ class EnvironmentHealthResponse(BaseModel):
     console_url: str
     proxy_url: str | None = None
     error: str | None = None
+
+
+# ==============================================================================
+# 阶段 2/3：集群 / 节点 / 应用
+# ==============================================================================
+
+
+class ClusterNodeRequest(BaseModel):
+    ip: str = Field(min_length=1)
+    hostname: str = Field(min_length=1)
+    role: Literal["master", "worker"] = "worker"
+    port: int = 22
+    username: str | None = None
+
+
+class CreateClusterRequest(BaseModel):
+    agent_id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=63)
+    nodes: list[ClusterNodeRequest] = Field(default_factory=list)
+    confirm: bool = False
+    dry_run: bool = False
+
+
+class ClusterPreflightRequest(BaseModel):
+    agent_id: str = Field(min_length=1)
+    name: str = "bke-preflight"
+    nodes: list[ClusterNodeRequest] = Field(default_factory=list)
+
+
+class ClusterNodeResponse(BaseModel):
+    ip: str
+    hostname: str
+    port: int
+    username: str
+    role: str
+    is_local: bool
+    status: str
+    phase: str
+    error_code: str | None = None
+    last_message: str | None = None
+
+    @classmethod
+    def from_record(cls, record: Any) -> ClusterNodeResponse:
+        return cls(
+            ip=record.ip,
+            hostname=record.hostname,
+            port=record.port,
+            username=record.username,
+            role=record.role,
+            is_local=record.is_local,
+            status=record.status,
+            phase=record.phase,
+            error_code=record.error_code,
+            last_message=record.last_message,
+        )
+
+
+class ClusterResponse(BaseModel):
+    id: str
+    agent_id: str
+    name: str
+    namespace: str
+    status: str
+    phase: str
+    progress: int
+    expected_node_count: int
+    endpoint: str | None = None
+    kubeconfig_path: str | None = None
+    preflight: dict[str, Any] | None = None
+    nodes: list[ClusterNodeResponse] = Field(default_factory=list)
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
+    started_at: UtcDatetime | None = None
+    finished_at: UtcDatetime | None = None
+
+    @classmethod
+    def from_record(
+        cls,
+        record: Any,
+        nodes: list[Any] | None = None,
+    ) -> ClusterResponse:
+        return cls(
+            id=record.id,
+            agent_id=record.agent_id,
+            name=record.name,
+            namespace=record.namespace,
+            status=record.status,
+            phase=record.phase,
+            progress=record.progress,
+            expected_node_count=record.expected_node_count,
+            endpoint=record.endpoint,
+            kubeconfig_path=record.kubeconfig_path,
+            preflight=record.preflight_json,
+            nodes=[ClusterNodeResponse.from_record(item) for item in nodes or []],
+            error_code=record.error_code,
+            error_message=record.error_message,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            started_at=record.started_at,
+            finished_at=record.finished_at,
+        )
+
+
+class CreateClusterResponse(BaseModel):
+    cluster: ClusterResponse | None
+    plan: list[dict[str, str | int]]
+    created: bool
+    needs_confirm: bool = False
+
+
+class ClusterPreflightFailureResponse(BaseModel):
+    rule_id: str
+    subject: str
+    status: str
+    node_ip: str | None = None
+    code: str
+    message: str
+    remediation: str = ""
+
+
+class ClusterPreflightResponse(BaseModel):
+    ready: bool
+    summary: str
+    failures: list[ClusterPreflightFailureResponse]
+    tolerated: list[ClusterPreflightFailureResponse]
+    preflight: dict[str, Any]
+
+
+class AppInstallRequest(BaseModel):
+    agent_id: str = Field(min_length=1)
+    cluster: str = Field(min_length=1)
+    release_name: str = Field(min_length=1, max_length=63)
+    namespace: str = "default"
+    chart_dir: str | None = None
+    repo_url: str | None = None
+    chart: str | None = None
+    chart_version: str | None = None
+    values: dict[str, Any] = Field(default_factory=dict)
+    image: str | None = None
+    node_port: int | None = None
+    verify_url: str | None = None
+    confirm: bool = False
+
+
+class AppResponse(BaseModel):
+    id: str
+    cluster_id: str
+    agent_id: str
+    namespace: str
+    release_name: str
+    chart_name: str | None = None
+    chart_version: str | None = None
+    image_override: str | None = None
+    status: str
+    phase: str
+    progress: int
+    node_port: int | None = None
+    verify_url: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
+    started_at: UtcDatetime | None = None
+    finished_at: UtcDatetime | None = None
+
+    @classmethod
+    def from_record(cls, record: Any) -> AppResponse:
+        return cls(
+            id=record.id,
+            cluster_id=record.cluster_id,
+            agent_id=record.agent_id,
+            namespace=record.namespace,
+            release_name=record.release_name,
+            chart_name=record.chart_name,
+            chart_version=record.chart_version,
+            image_override=record.image_override,
+            status=record.status,
+            phase=record.phase,
+            progress=record.progress,
+            node_port=record.node_port,
+            verify_url=record.verify_url,
+            error_code=record.error_code,
+            error_message=record.error_message,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+            started_at=record.started_at,
+            finished_at=record.finished_at,
+        )
+
+
+class CreateAppResponse(BaseModel):
+    app: AppResponse | None
+    created: bool
+    needs_confirm: bool = False

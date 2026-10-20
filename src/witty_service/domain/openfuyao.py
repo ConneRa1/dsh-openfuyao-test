@@ -52,6 +52,52 @@ class BootstrapPhase(StrEnum):
     done = "done"
 
 
+class ClusterStatus(StrEnum):
+    """业务集群状态。``ready`` 是唯一目标态；``failed``/``cancelled`` 是终态。"""
+
+    pending = "pending"
+    preflight = "preflight"
+    creating = "creating"
+    joining = "joining"
+    waiting_ready = "waiting_ready"
+    ready = "ready"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
+class ClusterPhase(StrEnum):
+    preflight = "preflight"
+    render = "render"
+    submitted = "submitted"
+    control_plane = "control_plane"
+    joining = "joining"
+    wait_ready = "wait_ready"
+    done = "done"
+
+
+class NodeRole(StrEnum):
+    master = "master"
+    worker = "worker"
+
+
+class NodeStatus(StrEnum):
+    pending = "pending"
+    bootstrapping = "bootstrapping"
+    joined = "joined"
+    ready = "ready"
+    failed = "failed"
+
+
+class AppStatus(StrEnum):
+    pending = "pending"
+    resolving = "resolving"
+    installing = "installing"
+    verifying = "verifying"
+    deployed = "deployed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
 #: 已经落定、不可再被取消覆盖的状态。
 TERMINAL_STATUSES: Final = frozenset(
     {
@@ -142,6 +188,32 @@ class ErrorCode(StrEnum):
     CANCELLED = "CANCELLED"
 
     # ------------------------------------------------------------------
+    # 阶段 2：集群/节点（§11.5；只增不改）
+    # ------------------------------------------------------------------
+    CLUSTER_NOT_FOUND = "CLUSTER_NOT_FOUND"
+    CLUSTER_IN_PROGRESS = "CLUSTER_IN_PROGRESS"
+    CLUSTER_NOT_CANCELLABLE = "CLUSTER_NOT_CANCELLABLE"
+    CLUSTER_CREATE_FAILED = "CLUSTER_CREATE_FAILED"
+    CLUSTER_INTERRUPTED = "CLUSTER_INTERRUPTED"
+    CLUSTER_NOT_READY = "CLUSTER_NOT_READY"
+    NODE_CREDENTIAL_MISSING = "NODE_CREDENTIAL_MISSING"
+    NODE_PRIVILEGE_MISSING = "NODE_PRIVILEGE_MISSING"
+    NODE_CPU_INSUFFICIENT = "NODE_CPU_INSUFFICIENT"
+    NODE_DISK_INSUFFICIENT = "NODE_DISK_INSUFFICIENT"
+    NODE_ROLE_INVALID = "NODE_ROLE_INVALID"
+    NODE_COUNT_MISMATCH = "NODE_COUNT_MISMATCH"
+    NODE_NOT_READY = "NODE_NOT_READY"
+
+    # ------------------------------------------------------------------
+    # 阶段 3：应用
+    # ------------------------------------------------------------------
+    APP_NOT_FOUND = "APP_NOT_FOUND"
+    APP_IN_PROGRESS = "APP_IN_PROGRESS"
+    APP_INTERRUPTED = "APP_INTERRUPTED"
+    APP_INSTALL_FAILED = "APP_INSTALL_FAILED"
+    APP_CANCELLED = "APP_CANCELLED"
+
+    # ------------------------------------------------------------------
     # CLI 自身（不发 HTTP、不落库）
     # ------------------------------------------------------------------
     API_UNREACHABLE = "API_UNREACHABLE"
@@ -219,3 +291,59 @@ BOOTSTRAP_PLAN: Final[tuple[PlanStep, ...]] = build_plan(
         ("wait_console", "等待控制台就绪", 90),
     )
 )
+
+
+#: 业务集群执行计划（进度是阶段映射，不是真实完成度）。
+CLUSTER_PLAN: Final[tuple[PlanStep, ...]] = build_plan(
+    (
+        ("preflight", "节点预检", 10),
+        ("render", "渲染集群配置", 15),
+        ("submitted", "提交创建", 30),
+        ("control_plane", "启动控制面", 55),
+        ("joining", "加入已有节点", 75),
+        ("wait_ready", "等待节点就绪", 90),
+        ("done", "完成", 100),
+    )
+)
+
+CLUSTER_PROGRESS: Final[dict[ClusterPhase, int]] = {
+    ClusterPhase.preflight: 10,
+    ClusterPhase.render: 15,
+    ClusterPhase.submitted: 30,
+    ClusterPhase.control_plane: 55,
+    ClusterPhase.joining: 75,
+    ClusterPhase.wait_ready: 90,
+    ClusterPhase.done: 100,
+}
+
+CLUSTER_TERMINAL_STATUSES: Final = frozenset(
+    {ClusterStatus.ready, ClusterStatus.failed, ClusterStatus.cancelled}
+)
+
+CLUSTER_ACTIVE_STATUSES: Final = frozenset(
+    {
+        ClusterStatus.preflight,
+        ClusterStatus.creating,
+        ClusterStatus.joining,
+        ClusterStatus.waiting_ready,
+    }
+)
+
+CLUSTER_CANCELLABLE_STATUSES: Final = CLUSTER_ACTIVE_STATUSES
+
+#: 允许再次发起创建的状态（ready 幂等返回，不重跑）。
+CLUSTER_CREATE_ALLOWED_FROM: Final = frozenset(
+    {
+        ClusterStatus.pending,
+        ClusterStatus.failed,
+        ClusterStatus.cancelled,
+    }
+)
+
+APP_TERMINAL_STATUSES: Final = frozenset(
+    {AppStatus.deployed, AppStatus.failed, AppStatus.cancelled}
+)
+APP_ACTIVE_STATUSES: Final = frozenset(
+    {AppStatus.resolving, AppStatus.installing, AppStatus.verifying}
+)
+APP_CANCELLABLE_STATUSES: Final = APP_ACTIVE_STATUSES

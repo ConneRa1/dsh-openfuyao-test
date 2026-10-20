@@ -119,6 +119,22 @@ def create_app(*, services: ServiceContainer | None = None) -> FastAPI:
             logger.exception("Failed to recover openFuyao environments")
 
     @app.on_event("startup")
+    def recover_openfuyao_clusters() -> None:
+        """服务重启后把中断的集群/应用标记失败（与 Bootstrap 同一套恢复语义）。"""
+        try:
+            services = app.state.services
+            clusters = services.get_cluster_service().recover_stale()
+            apps = services.get_app_service().recover_stale()
+            if clusters or apps:
+                logger.warning(
+                    "Recovered %d interrupted openFuyao cluster(s), %d app(s)",
+                    clusters,
+                    apps,
+                )
+        except Exception:
+            logger.exception("Failed to recover openFuyao clusters")
+
+    @app.on_event("startup")
     def recover_stale_generations() -> None:
         from witty_service.persistence.orm import MessageStatus
 

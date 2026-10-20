@@ -9,6 +9,8 @@ from typing import Any
 from witty_service.adapter.http_client import AdaptorHttpClient
 from witty_service.adapter.websocket_client_pool import WebSocketClientPool
 from witty_service.application.agent_manager import AgentManager
+from witty_service.application.openfuyao.app_service import AppService
+from witty_service.application.openfuyao.cluster_service import ClusterService
 from witty_service.application.openfuyao.environment_service import (
     EnvironmentService,
 )
@@ -31,6 +33,9 @@ from witty_service.persistence.db import (
     create_session_factory,
     create_sqlite_engine,
     init_db,
+)
+from witty_service.persistence.openfuyao_cluster_repository import (
+    OpenFuyaoClusterRepository,
 )
 from witty_service.persistence.openfuyao_repository import OpenFuyaoRepository
 from witty_service.persistence.repositories import SqliteRepository
@@ -66,6 +71,9 @@ class ServiceContainer:
     )
     #: openFuyao 编排服务：首次访问时构造，避免测试用 MagicMock 容器时触碰路径/DB。
     openfuyao_service: EnvironmentService | None = field(init=False, default=None)
+    #: 阶段 2/3：业务集群与应用编排
+    cluster_service: ClusterService | None = field(init=False, default=None)
+    app_service: AppService | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.session_manager = SessionManager(repository=self.repository)
@@ -153,6 +161,30 @@ class ServiceContainer:
             )
         return self.openfuyao_service
 
+    def _cluster_repository(self) -> OpenFuyaoClusterRepository:
+        return OpenFuyaoClusterRepository(self.repository.session_factory)
+
+    def get_cluster_service(self) -> ClusterService:
+        if self.cluster_service is None:
+            self.cluster_service = ClusterService(
+                repository=self._cluster_repository(),
+                environment_repository=OpenFuyaoRepository(
+                    self.repository.session_factory
+                ),
+                settings=get_settings().openfuyao,
+                workspace_root=Path(self.workspace_store.base_dir),
+            )
+        return self.cluster_service
+
+    def get_app_service(self) -> AppService:
+        if self.app_service is None:
+            self.app_service = AppService(
+                repository=self._cluster_repository(),
+                settings=get_settings().openfuyao,
+                workspace_root=Path(self.workspace_store.base_dir),
+            )
+        return self.app_service
+
     def get_sandbox_backend(self, sandbox_type: str) -> SandboxBackend:
         key = sandbox_type.lower()
         backend = self.sandbox_backends.get(key)
@@ -191,6 +223,10 @@ class ServiceContainer:
     async def close(self) -> None:
         if self.openfuyao_service is not None:
             await self.openfuyao_service.close()
+        if self.cluster_service is not None:
+            await self.cluster_service.close()
+        if self.app_service is not None:
+            await self.app_service.close()
         self._stop_sandbox_backends()
         if self.insight_http_client is not None:
             await self.insight_http_client.close()

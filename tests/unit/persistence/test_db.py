@@ -154,6 +154,13 @@ def _complete_legacy_schema(
         Column("agent_id", String(36)),
         Column("host", String(255)),
     )
+    # 20261021_01：集群/节点/应用三张表同样属于存量库判定的必需对象
+    for table_name in (
+        "openfuyao_clusters",
+        "openfuyao_cluster_nodes",
+        "openfuyao_apps",
+    ):
+        Table(table_name, meta, Column("id", String(36), primary_key=True))
 
 
 def _add_channel_tables(meta: MetaData) -> None:

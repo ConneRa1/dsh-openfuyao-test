@@ -112,6 +112,10 @@ def _handle_legacy_db_if_needed(engine: Engine, alembic_cfg: AlembicConfig) -> N
         "channel_access_policies",
         # 20261019_01：openFuyao Environment
         "openfuyao_environments",
+        # 20261021_01：openFuyao 集群/节点/应用
+        "openfuyao_clusters",
+        "openfuyao_cluster_nodes",
+        "openfuyao_apps",
     }
     required_columns = {
         "sessions": {

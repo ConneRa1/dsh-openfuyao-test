@@ -439,6 +439,10 @@ const proxyUrl = useMemo(() => {
 > `/etc/rancher/k3s` 必然存在 → `clean_host` 必然 fail。所以**阶段 2 的节点校验不能复用
 > `run_preflight`**，要另写一套“节点就绪检查”（SSH 可达、hostname RFC1123、内存、磁盘、6443 空闲），
 > 这正是方案 §5.2 第 2 条，但代码里还没有。
+>
+> 补充（2026-10-20 实测）：**远端节点的事实不需要我们自己采集**——`bke preflight cluster-create
+> --output json` 已覆盖 SSH 连通/认证/提权、OS/内核、CPU/内存/磁盘、9 个端口、仓库可达性，且按节点
+> 输出。`evaluate_node` 只用来兜住 BKE 不查的两件事：**hostname RFC1123** 与 **IP/hostname 去重**。
 
 ### 4.3 持久化：一张表 + 一个仓储
 
@@ -939,8 +943,11 @@ if not args.confirm:
 `allow_unsupported_os` 的“矩阵例外”只在 bootstrap 门禁的 `bke preflight` 环节生效；
 阶段 2 的节点校验改用 `Gate.node`，不再经过这段表格解析。
 
-> 仍未改成 `--output json`：`bke preflight` 目前没有稳定的 json 输出，改成 JSON 需要先与
-> BKE 侧确认字段；当前保留表格解析，但**失效方向是拒绝放行**，不会误放。
+> 仍未改成 `--output json`：~~`bke preflight` 目前没有稳定的 json 输出~~ —— **2026-10-20 实测更正**：
+> `bke preflight cluster-create --output json` 已经输出稳定单文档（`schemaVersion=v1`，含
+> `overall/exitCode/summary/results[]`，逐条 `ruleID/subject/status/expected/actual/remediation`，
+> 失败时进程退出码 **3**）。阶段 2 的节点校验不再需要解析中文表格，改为消费该 JSON；
+> 详见 `docs/openfuyao-multinode-spike-findings.md`。
 
 ### 7.5 其它小项
 
@@ -1071,10 +1078,14 @@ witty-service openfuyao status --agent-id 46083619-6933-440c-92c4-ae8570bc003b -
    `ErrorCode`/`ExitCode` 都在，直接写 `cluster_runner.py` / `cluster_service.py`。
 2. **CLI 契约照 `_finish` + `ExitCode` 写**：`cluster create` 的“需要确认”必须复用 `ExitCode.CONFIRM_REQUIRED`
    （2），“预检未过”复用 3，“终态非目标”复用 4，不要另起一套。
-3. **节点校验用 `Gate.node`**：`evaluate(facts, gate=Gate.node)` 已覆盖 hostname/内存/磁盘/6443，
-   SSH 可达性在连接层补 `NODE_UNREACHABLE`。**不要**再复用默认 `bootstrap` 门禁——
-   它在阶段 1 之后必然失败，这是预期行为，应写进部署文档。
+3. **节点校验分两半**：远端事实（SSH/OS/内核/CPU/内存/磁盘/端口/仓库）**全部交给
+   `bke preflight cluster-create --output json`**，按 `results[].subject` 归因到节点并映射错误码
+   （`--output json` 与退出码 3 已实测，见 §7.4 更正）；`Gate.node` 只兜 **BKE 不查的两件事**：
+   hostname RFC1123（BKE 用 `--hostname-override`，不校验）与 IP/hostname 去重。
+   **不要**再复用默认 `bootstrap` 门禁——它在阶段 1 之后必然失败，这是预期行为，应写进部署文档。
 
 验收上，方案 §7 的 A1-A4 我只看到 A1 有代码路径；A2/A3/A4 依赖第 6 章的新增项。建议在阶段 B
 结束时先跑一次 **A2 的负例**（故意把 hostname 设成带下划线），验证 `HOSTNAME_INVALID` 这条
 错误码链路是通的——这条链路一旦不通，A4“按错误码给下一步”就只是文案。
+实测补充：**BKE 不校验 hostname**（`--hostname-override` 原样使用），所以这条本地校验是唯一防线，
+不能因为“BKE 预检会拦”而省掉。

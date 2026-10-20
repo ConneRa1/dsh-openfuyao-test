@@ -27,10 +27,15 @@ import os
 import sys
 import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+from witty_service.application.openfuyao.cluster_spec import (
+    parse_node_argument,
+    parse_nodes_file,
+)
 from witty_service.application.openfuyao.preflight import (
     Gate,
     PreflightCheck,
@@ -539,6 +544,9 @@ def build_parser() -> argparse.ArgumentParser:
     logs.add_argument("--interval", type=float, default=1.0)
     logs.set_defaults(handler=_cmd_logs)
 
+    _add_cluster_parsers(subparsers)
+    _add_app_parsers(subparsers)
+
     return parser
 
 
@@ -551,8 +559,690 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(args.handler(args))
     except _ApiError as exc:
         print(f"错误 [{exc.code}] {exc}", file=sys.stderr)
-        return int(ExitCode.ERROR)
+        # 本地门禁类错误（hostname/IP/凭据/预检）与阶段 1 一样退 3，
+        # Agent 才能把“节点参数不合法”和“API 挂了”分开处理。
+        return int(_exit_for_error(exc.code))
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# ==============================================================================
+# 阶段 2：集群
+# ==============================================================================
+
+_CLUSTER_TERMINAL = frozenset({"ready", "failed", "cancelled"})
+_APP_TERMINAL = frozenset({"deployed", "failed", "cancelled"})
+
+#: 这些错误码说明“门禁没过”，CLI 统一退出 3，便于 Agent 与阶段 1 用同一套分流。
+_PREFLIGHT_ERROR_CODES = frozenset(
+    {
+        ErrorCode.PREFLIGHT_FAILED,
+        ErrorCode.HOSTNAME_INVALID,
+        ErrorCode.NODE_UNREACHABLE,
+        ErrorCode.NODE_PRIVILEGE_MISSING,
+        ErrorCode.NODE_CPU_INSUFFICIENT,
+        ErrorCode.NODE_DISK_INSUFFICIENT,
+        ErrorCode.NODE_ROLE_INVALID,
+        ErrorCode.NODE_CREDENTIAL_MISSING,
+        ErrorCode.MEMORY_INSUFFICIENT,
+    }
+)
+
+
+def _exit_for_error(code: str) -> ExitCode:
+    return (
+        ExitCode.PREFLIGHT_FAILED
+        if code in _PREFLIGHT_ERROR_CODES
+        else ExitCode.ERROR
+    )
+
+
+def _collect_nodes(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """合并 ``--nodes-file`` 与重复的 ``--node``；密码不在这里出现。"""
+    nodes: list[dict[str, Any]] = []
+    if getattr(args, "nodes_file", None):
+        try:
+            payload = json.loads(Path(args.nodes_file).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise _ApiError(
+                0, ErrorCode.NODE_ROLE_INVALID, f"节点文件不可读：{exc}"
+            ) from exc
+        nodes.extend(parse_nodes_file(payload))
+    for raw in getattr(args, "node", None) or []:
+        nodes.append(dict(parse_node_argument(raw)))
+    return nodes
+
+
+def _print_cluster(cluster: dict[str, Any]) -> None:
+    print(
+        "集群 {name}  status={status} phase={phase} progress={progress}%".format(
+            **cluster
+        )
+    )
+    if cluster.get("endpoint"):
+        print(f"  endpoint:   {cluster['endpoint']}")
+    if cluster.get("kubeconfig_path"):
+        print(f"  kubeconfig: {cluster['kubeconfig_path']}")
+    if cluster.get("error_code"):
+        print(
+            f"  error:      {cluster['error_code']} "
+            f"{cluster.get('error_message') or ''}"
+        )
+    nodes = cluster.get("nodes") or []
+    if nodes:
+        print("  节点:")
+        for node in nodes:
+            marker = "local" if node.get("is_local") else "     "
+            text = (
+                f"    [{node['role']:<6}] {node['ip']:<15} {node['hostname']:<20} "
+                f"{node['status']:<14} {marker}"
+            )
+            if node.get("error_code"):
+                text += f" {node['error_code']}: {(node.get('last_message') or '')[:60]}"
+            print(text)
+
+
+def _print_nodes_table(nodes: Sequence[dict[str, Any]]) -> None:
+    print("节点：")
+    for node in nodes:
+        print(
+            f"  [{node.get('role', 'worker'):<6}] {node.get('ip', ''):<15} "
+            f"{node.get('hostname', ''):<20} port={node.get('port', 22)}"
+        )
+
+
+def _cluster_summary(cluster: dict[str, Any]) -> str:
+    status = cluster["status"]
+    if status == "ready":
+        return f"集群 {cluster['name']} 已就绪，endpoint={cluster.get('endpoint') or ''}"
+    if status == "failed":
+        return (
+            f"集群 {cluster['name']} 创建失败：{cluster.get('error_code') or ''} "
+            f"{cluster.get('error_message') or ''}"
+        )
+    if status == "cancelled":
+        return f"集群 {cluster['name']} 已取消"
+    return f"集群 {cluster['name']} 正在创建（{cluster['status']} / {cluster['phase']}）"
+
+
+def _cluster_exit(cluster: dict[str, Any]) -> ExitCode:
+    status = cluster["status"]
+    if status == "ready":
+        return ExitCode.OK
+    if status in ("failed", "cancelled"):
+        if cluster.get("error_code") in _PREFLIGHT_ERROR_CODES:
+            return ExitCode.PREFLIGHT_FAILED
+        return ExitCode.FAILED
+    return ExitCode.OK
+
+
+def _finish_cluster(
+    args: argparse.Namespace,
+    *,
+    exit_code: ExitCode,
+    summary: str,
+    cluster: dict[str, Any] | None,
+    plan: Sequence[dict[str, Any]],
+    nodes: Sequence[dict[str, Any]] | None = None,
+    needs_confirm: bool = False,
+) -> int:
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "exit_code": int(exit_code),
+                    "needs_confirm": needs_confirm,
+                    "summary": summary,
+                    "cluster": cluster,
+                    "nodes": list(
+                        (cluster.get("nodes") if cluster else None) or nodes or []
+                    ),
+                    "plan": list(plan),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return int(exit_code)
+    if cluster is not None:
+        _print_cluster(cluster)
+    elif nodes:
+        _print_nodes_table(nodes)
+    _print_plan(plan)
+    print("")
+    print(summary)
+    return int(exit_code)
+
+
+def _cluster_id_or_latest(client: _Client, args: argparse.Namespace) -> dict[str, Any]:
+    if getattr(args, "cluster_id", None):
+        return client.request("GET", f"/openfuyao/clusters/{args.cluster_id}")
+    clusters = client.request(
+        "GET", "/openfuyao/clusters", params={"agent_id": _agent_id(args)}
+    )
+    if not clusters:
+        raise _ApiError(404, ErrorCode.CLUSTER_NOT_FOUND, "该 Agent 还没有业务集群")
+    if getattr(args, "name", None):
+        for cluster in clusters:
+            if cluster["name"] == args.name:
+                return cluster
+        raise _ApiError(
+            404, ErrorCode.CLUSTER_NOT_FOUND, f"集群 {args.name} 不存在"
+        )
+    return clusters[0]
+
+
+def _poll_cluster(
+    client: _Client,
+    cluster: dict[str, Any],
+    *,
+    timeout: float,
+    interval: float,
+    quiet: bool = False,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    current = cluster
+    previous: tuple[str, str] | None = None
+    while True:
+        signature = (current["status"], current["phase"])
+        if signature != previous:
+            if not quiet:
+                _print_cluster(current)
+            previous = signature
+        if current["status"] in _CLUSTER_TERMINAL:
+            return current
+        if time.monotonic() >= deadline:
+            raise _ApiError(0, ErrorCode.WAIT_TIMEOUT, f"等待超过 {int(timeout)}s")
+        time.sleep(interval)
+        current = client.request("GET", f"/openfuyao/clusters/{current['id']}")
+
+
+def _cmd_cluster_create(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        nodes = _collect_nodes(args)
+        result = client.request(
+            "POST",
+            "/openfuyao/clusters",
+            json={
+                "agent_id": _agent_id(args),
+                "name": args.name,
+                "nodes": nodes,
+                "confirm": args.confirm,
+                "dry_run": args.dry_run,
+            },
+        )
+        plan = result.get("plan") or []
+        cluster = result.get("cluster")
+        if result.get("needs_confirm"):
+            summary = (
+                f"将在 {_agent_id(args)} 的环境上创建业务集群 {args.name}；"
+                "加 --confirm 才会执行 bke cluster create（会改动节点）。"
+            )
+            return _finish_cluster(
+                args,
+                exit_code=ExitCode.CONFIRM_REQUIRED,
+                summary=summary,
+                cluster=None,
+                plan=plan,
+                nodes=nodes,
+                needs_confirm=True,
+            )
+        if cluster is None:
+            return _finish_cluster(
+                args,
+                exit_code=ExitCode.OK,
+                summary="dry-run：只做了本地校验，未创建集群。",
+                cluster=None,
+                plan=plan,
+                nodes=nodes,
+            )
+        if args.wait:
+            cluster = _poll_cluster(
+                client,
+                cluster,
+                timeout=args.timeout,
+                interval=args.interval,
+                quiet=args.json,
+            )
+        return _finish_cluster(
+            args,
+            exit_code=_cluster_exit(cluster),
+            summary=_cluster_summary(cluster),
+            cluster=cluster,
+            plan=plan,
+        )
+    finally:
+        client.close()
+
+
+def _cmd_cluster_preflight(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        nodes = _collect_nodes(args)
+        result = client.request(
+            "POST",
+            "/openfuyao/clusters/preflight",
+            json={
+                "agent_id": _agent_id(args),
+                "name": args.name,
+                "nodes": nodes,
+            },
+            timeout=1200.0,
+        )
+        failures = result.get("failures") or []
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"节点预检：{result['summary']}")
+            for item in failures:
+                print(
+                    f"  [FAIL] {item['code']:<24} {item['subject']:<24} "
+                    f"{item['message'][:100]}"
+                )
+                if item.get("remediation"):
+                    print(f"         建议：{item['remediation']}")
+            for item in result.get("tolerated") or []:
+                print(f"  [WARN] {item['rule_id']} 已按 OS 矩阵例外放行")
+        return int(ExitCode.OK if result["ready"] else ExitCode.PREFLIGHT_FAILED)
+    finally:
+        client.close()
+
+
+def _cmd_cluster_status(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        cluster = _cluster_id_or_latest(client, args)
+        if args.wait:
+            cluster = _poll_cluster(
+                client,
+                cluster,
+                timeout=args.timeout,
+                interval=args.interval,
+                quiet=args.json,
+            )
+        if args.json:
+            print(json.dumps(cluster, ensure_ascii=False, indent=2))
+        else:
+            _print_cluster(cluster)
+        return int(_cluster_exit(cluster))
+    finally:
+        client.close()
+
+
+def _cmd_cluster_list(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        clusters = client.request(
+            "GET", "/openfuyao/clusters", params={"agent_id": _agent_id(args)}
+        )
+        if args.json:
+            print(json.dumps(clusters, ensure_ascii=False, indent=2))
+        else:
+            for cluster in clusters:
+                print(
+                    f"{cluster['name']:<24} {cluster['status']:<14} "
+                    f"{cluster['phase']:<14} {cluster['progress']:>3}%  "
+                    f"{cluster.get('endpoint') or ''}"
+                )
+        return int(ExitCode.OK)
+    finally:
+        client.close()
+
+
+def _cmd_cluster_destroy(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        cluster = _cluster_id_or_latest(client, args)
+        if not args.confirm:
+            print(
+                f"将删除集群 {cluster['name']} 的 BKECluster；节点上的 kubelet/控制面不会自动卸载。"
+                " 加 --confirm 才会执行。",
+                file=sys.stderr,
+            )
+            return int(ExitCode.CONFIRM_REQUIRED)
+        result = client.request(
+            "DELETE",
+            f"/openfuyao/clusters/{cluster['id']}",
+            params={"confirm": True},
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"集群 {result['destroyed']} 的 BKECluster 已删除。")
+            print("以下节点仍可能残留 kubelet/控制面，需要重装或手工清理：")
+            for item in result.get("nodes_dirty") or []:
+                print(
+                    f"  [{item['role']:<6}] {item['ip']:<15} {item['hostname']}"
+                )
+        return int(ExitCode.OK)
+    finally:
+        client.close()
+
+
+def _cmd_cluster_logs(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        cluster = _cluster_id_or_latest(client, args)
+        cursor = args.cursor
+        while True:
+            page = client.request(
+                "GET",
+                f"/openfuyao/clusters/{cluster['id']}/logs",
+                params={"cursor": cursor},
+            )
+            for line in page["lines"]:
+                print(line)
+            cursor = page["next_cursor"]
+            if not args.follow or page["eof"]:
+                return int(ExitCode.OK)
+            cluster = client.request("GET", f"/openfuyao/clusters/{cluster['id']}")
+            if cluster["status"] in _CLUSTER_TERMINAL:
+                page = client.request(
+                    "GET",
+                    f"/openfuyao/clusters/{cluster['id']}/logs",
+                    params={"cursor": cursor},
+                )
+                for line in page["lines"]:
+                    print(line)
+                return int(_cluster_exit(cluster))
+            time.sleep(args.interval)
+    finally:
+        client.close()
+
+
+# ==============================================================================
+# 阶段 3：应用
+# ==============================================================================
+
+
+def _print_app(app: dict[str, Any]) -> None:
+    print(
+        "应用 {release_name}  ns={namespace}  status={status} phase={phase} "
+        "progress={progress}%".format(**app)
+    )
+    if app.get("chart_name"):
+        print(f"  chart:    {app['chart_name']} {app.get('chart_version') or ''}")
+    if app.get("image_override"):
+        print(f"  image:    {app['image_override']}")
+    if app.get("verify_url"):
+        print(f"  url:      {app['verify_url']}")
+    if app.get("error_code"):
+        print(f"  error:    {app['error_code']} {app.get('error_message') or ''}")
+
+
+def _app_exit(app: dict[str, Any]) -> ExitCode:
+    if app["status"] == "deployed":
+        return ExitCode.OK
+    if app["status"] in ("failed", "cancelled"):
+        return ExitCode.FAILED
+    return ExitCode.OK
+
+
+def _poll_app(
+    client: _Client,
+    app: dict[str, Any],
+    *,
+    timeout: float,
+    interval: float,
+    quiet: bool = False,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    current = app
+    previous: str | None = None
+    while True:
+        if current["status"] != previous:
+            if not quiet:
+                _print_app(current)
+            previous = current["status"]
+        if current["status"] in _APP_TERMINAL:
+            return current
+        if time.monotonic() >= deadline:
+            raise _ApiError(0, ErrorCode.WAIT_TIMEOUT, f"等待超过 {int(timeout)}s")
+        time.sleep(interval)
+        current = client.request("GET", f"/openfuyao/apps/{current['id']}")
+
+
+def _cmd_app_install(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        values: dict[str, Any] = {}
+        if args.values:
+            try:
+                parsed = json.loads(args.values)
+            except ValueError as exc:
+                raise _ApiError(
+                    0, ErrorCode.APP_INSTALL_FAILED, f"--values 不是合法 JSON：{exc}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise _ApiError(
+                    0, ErrorCode.APP_INSTALL_FAILED, "--values 必须是 JSON 对象"
+                )
+            values = parsed
+        result = client.request(
+            "POST",
+            "/openfuyao/apps",
+            json={
+                "agent_id": _agent_id(args),
+                "cluster": args.cluster,
+                "release_name": args.release,
+                "namespace": args.namespace,
+                "chart_dir": args.chart_dir,
+                "repo_url": args.repo_url,
+                "chart": args.chart,
+                "chart_version": args.chart_version,
+                "values": values,
+                "image": args.image,
+                "node_port": args.node_port,
+                "verify_url": args.verify_url,
+                "confirm": args.confirm,
+            },
+        )
+        app = result.get("app")
+        if result.get("needs_confirm"):
+            message = (
+                f"将在集群 {args.cluster} 安装 {args.release}（ns={args.namespace}）；"
+                "加 --confirm 才会执行 helm。"
+            )
+            if args.json:
+                print(
+                    json.dumps(
+                        {
+                            "exit_code": int(ExitCode.CONFIRM_REQUIRED),
+                            "needs_confirm": True,
+                            "summary": message,
+                            "app": app,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            else:
+                print(message)
+            return int(ExitCode.CONFIRM_REQUIRED)
+        if app is None:
+            raise _ApiError(0, ErrorCode.APP_INSTALL_FAILED, "服务未返回应用记录")
+        if args.wait:
+            app = _poll_app(
+                client,
+                app,
+                timeout=args.timeout,
+                interval=args.interval,
+                quiet=args.json,
+            )
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "exit_code": int(_app_exit(app)),
+                        "needs_confirm": False,
+                        "summary": (
+                            f"{app['release_name']} 已部署，url={app.get('verify_url') or ''}"
+                            if app["status"] == "deployed"
+                            else f"{app['release_name']} 未成功：{app['status']}"
+                        ),
+                        "app": app,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            _print_app(app)
+        return int(_app_exit(app))
+    finally:
+        client.close()
+
+
+def _cmd_app_status(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        if args.app_id:
+            app = client.request("GET", f"/openfuyao/apps/{args.app_id}")
+        else:
+            params: dict[str, Any] = {"agent_id": _agent_id(args)}
+            if args.cluster:
+                clusters = client.request(
+                    "GET", "/openfuyao/clusters", params={"agent_id": _agent_id(args)}
+                )
+                match = [item for item in clusters if item["name"] == args.cluster]
+                if not match:
+                    raise _ApiError(
+                        404, ErrorCode.CLUSTER_NOT_FOUND, f"集群 {args.cluster} 不存在"
+                    )
+                params["cluster_id"] = match[0]["id"]
+            apps = client.request("GET", "/openfuyao/apps", params=params)
+            if not apps:
+                raise _ApiError(404, ErrorCode.APP_NOT_FOUND, "还没有应用记录")
+            app = apps[0]
+        if args.wait:
+            app = _poll_app(
+                client,
+                app,
+                timeout=args.timeout,
+                interval=args.interval,
+                quiet=args.json,
+            )
+        if args.json:
+            print(json.dumps(app, ensure_ascii=False, indent=2))
+        else:
+            _print_app(app)
+        return int(_app_exit(app))
+    finally:
+        client.close()
+
+
+def _cmd_app_list(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        apps = client.request(
+            "GET", "/openfuyao/apps", params={"agent_id": _agent_id(args)}
+        )
+        if args.json:
+            print(json.dumps(apps, ensure_ascii=False, indent=2))
+        else:
+            for app in apps:
+                print(
+                    f"{app['release_name']:<24} ns={app['namespace']:<16} "
+                    f"{app['status']:<12} {app.get('verify_url') or ''}"
+                )
+        return int(ExitCode.OK)
+    finally:
+        client.close()
+
+
+def _add_cluster_parsers(subparsers: Any) -> None:
+    cluster = subparsers.add_parser("cluster", help="阶段 2：业务集群")
+    cluster_sub = cluster.add_subparsers(dest="cluster_command", required=True)
+
+    create = cluster_sub.add_parser("create", help="创建业务集群（本地 master + N 节点）")
+    _add_api_options(create)
+    create.add_argument("--name", required=True, help="集群名（同时作为 namespace）")
+    create.add_argument(
+        "--node",
+        action="append",
+        default=[],
+        help="节点：ip=...,hostname=...,role=master|worker（可重复）",
+    )
+    create.add_argument("--nodes-file", default=None, help="节点 JSON 数组文件")
+    create.add_argument("--confirm", action="store_true", help="确认执行 bke")
+    create.add_argument("--dry-run", action="store_true", help="只做本地校验")
+    create.add_argument("--wait", action="store_true")
+    create.add_argument("--timeout", type=float, default=2400.0)
+    create.add_argument("--interval", type=float, default=5.0)
+    create.set_defaults(handler=_cmd_cluster_create)
+
+    preflight = cluster_sub.add_parser("preflight", help="同步跑节点预检")
+    _add_api_options(preflight)
+    preflight.add_argument("--name", default="bke-preflight")
+    preflight.add_argument("--node", action="append", default=[])
+    preflight.add_argument("--nodes-file", default=None)
+    preflight.set_defaults(handler=_cmd_cluster_preflight)
+
+    status = cluster_sub.add_parser("status", help="查看集群状态")
+    _add_api_options(status)
+    status.add_argument("--name", default=None)
+    status.add_argument("--cluster-id", default=None)
+    status.add_argument("--wait", action="store_true")
+    status.add_argument("--timeout", type=float, default=2400.0)
+    status.add_argument("--interval", type=float, default=5.0)
+    status.set_defaults(handler=_cmd_cluster_status)
+
+    list_cmd = cluster_sub.add_parser("list", help="列出集群")
+    _add_api_options(list_cmd)
+    list_cmd.set_defaults(handler=_cmd_cluster_list)
+
+    destroy = cluster_sub.add_parser("destroy", help="只删 BKECluster（不清理节点）")
+    _add_api_options(destroy)
+    destroy.add_argument("--name", default=None)
+    destroy.add_argument("--cluster-id", default=None)
+    destroy.add_argument("--confirm", action="store_true")
+    destroy.set_defaults(handler=_cmd_cluster_destroy)
+
+    logs = cluster_sub.add_parser("logs", help="读取集群日志")
+    _add_api_options(logs)
+    logs.add_argument("--name", default=None)
+    logs.add_argument("--cluster-id", default=None)
+    logs.add_argument("--cursor", type=int, default=0)
+    logs.add_argument("--follow", action="store_true")
+    logs.add_argument("--interval", type=float, default=1.0)
+    logs.set_defaults(handler=_cmd_cluster_logs)
+
+
+def _add_app_parsers(subparsers: Any) -> None:
+    app = subparsers.add_parser("app", help="阶段 3：应用安装")
+    app_sub = app.add_subparsers(dest="app_command", required=True)
+
+    install = app_sub.add_parser("install", help="helm 安装并验证")
+    _add_api_options(install)
+    install.add_argument("--cluster", required=True)
+    install.add_argument("--release", required=True)
+    install.add_argument("--namespace", default="default")
+    install.add_argument("--chart-dir", default=None)
+    install.add_argument("--repo-url", default=None)
+    install.add_argument("--chart", default=None)
+    install.add_argument("--chart-version", default=None)
+    install.add_argument("--values", default=None, help="JSON 对象字符串")
+    install.add_argument("--image", default=None, help="覆盖 image.repository/tag")
+    install.add_argument("--node-port", type=int, default=None)
+    install.add_argument("--verify-url", default=None)
+    install.add_argument("--confirm", action="store_true")
+    install.add_argument("--wait", action="store_true")
+    install.add_argument("--timeout", type=float, default=1800.0)
+    install.add_argument("--interval", type=float, default=5.0)
+    install.set_defaults(handler=_cmd_app_install)
+
+    status = app_sub.add_parser("status", help="查看应用状态")
+    _add_api_options(status)
+    status.add_argument("--app-id", default=None)
+    status.add_argument("--cluster", default=None)
+    status.add_argument("--wait", action="store_true")
+    status.add_argument("--timeout", type=float, default=1800.0)
+    status.add_argument("--interval", type=float, default=5.0)
+    status.set_defaults(handler=_cmd_app_status)
+
+    list_cmd = app_sub.add_parser("list", help="列出应用")
+    _add_api_options(list_cmd)
+    list_cmd.set_defaults(handler=_cmd_app_list)

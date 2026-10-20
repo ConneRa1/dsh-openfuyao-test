@@ -1,0 +1,123 @@
+apiVersion: bke.bocloud.com/v1beta1
+kind: BKECluster
+metadata:
+  creationTimestamp: null
+  name: bke-multi
+  namespace: bke-multi
+spec:
+  KubeletConfigRef:
+    name: bke-kubelet
+    namespace: bke-kubelet
+  clusterConfig:
+    addons:
+    - name: kubeproxy
+      param:
+        clusterNetworkMode: calico
+      version: v1.34.3-of.1
+    - block: true
+      name: calico
+      param:
+        calicoMode: vxlan
+        ipAutoDetectionMethod: skip-interface=nerdctl*
+      version: v3.31.3
+    - name: coredns
+      param:
+        EnableAntiAffinity: "false"
+      version: v1.12.2-of.1
+    - block: true
+      name: cluster-api
+      param:
+        containerdVersion: v2.1.1
+        healthPort: "58080"
+        manage: "true"
+        manifestsVersion: latest
+        ntpServer: cn.pool.ntp.org:123
+        offline: "false"
+        openFuyaoVersion: latest
+        providerVersion: latest
+        replicas: "1"
+        sandbox: hub.oepkgs.net/openfuyao/pause:3.9
+      version: v1.4.3
+    - name: openfuyao-system-controller
+      param:
+        helmRepo: https://helm.openfuyao.cn/_core
+        tagVersion: latest
+      version: latest
+    cluster:
+      agentHealthPort: "58080"
+      apiServer:
+        extraArgs:
+          max-mutating-requests-inflight: "3000"
+          max-requests-inflight: "1000"
+          watch-cache-sizes: node#1000,pod#5000
+      certificatesDir: /etc/kubernetes/pki
+      chartRepo:
+        domain: cr.openfuyao.cn
+        ip: 119.3.216.97
+        port: "443"
+        prefix: charts
+      containerRuntime:
+        cri: containerd
+        param:
+          data-root: /var/lib/containerd
+        runtime: runc
+      containerdConfigRef:
+        name: bke-containerd
+        namespace: bke-containerd
+      containerdVersion: v2.1.1
+      controllerManager:
+        extraArgs:
+          kube-api-burst: "1000"
+          kube-api-qps: "1000"
+      etcd:
+        dataDir: /var/lib/openFuyao/etcd
+      etcdVersion: v3.6.7-of.1
+      httpRepo:
+        domain: http.bocloud.k8s
+        ip: 192.168.122.146
+        port: "40080"
+        prefix: ""
+      imageRepo:
+        domain: default
+        ip: 192.168.122.146
+        port: "40443"
+        prefix: ""
+      kubelet:
+        extraArgs:
+          kube-api-burst: "2000"
+          kube-api-qps: "1000"
+        extraVolumes:
+        - hostPath: /var/lib/kubelet
+          name: kubelet-root-dir
+      kubernetesVersion: v1.34.3-of.1
+      networking:
+        dnsDomain: cluster.local
+        podSubnet: 10.250.0.0/16
+        serviceSubnet: 10.96.0.0/16
+      ntpServer: cn.pool.ntp.org:123
+      openFuyaoVersion: latest
+      scheduler:
+        extraArgs:
+          kube-api-qps: "1000"
+    customExtra:
+      agentLogLevel: INFO
+      chartRepoPort: "38080"
+      clusterapi: latest
+      containerd: containerd-v2.1.1-linux-{.arch}.tar.gz
+      domain: deploy.bocloud.k8s
+      host: 192.168.122.146
+      imageRepoPort: "40443"
+      nfsserverpath: /
+      onlineImage: cr.openfuyao.cn/openfuyao/bke-online-installed:latest
+      otherChart: ""
+      otherChartIp: ""
+      otherRepo: ""
+      otherRepoIp: ""
+      otherSource: ""
+      yumRepoPort: "40080"
+  controlPlaneEndpoint: {}
+  pause: false
+status:
+  agentStatus: {}
+  controlPlaneConfigHash: {}
+  ready: false
