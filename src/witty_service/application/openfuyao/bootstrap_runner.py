@@ -1,8 +1,8 @@
 """openFuyao Bootstrap 执行器：下载/校验 BKE、bke init、等待控制台。
 
-进程独立成会话（``start_new_session=True``），取消时按进程组回收，避免留下
-orphan ``bke``。stdout/stderr 合并落 ``<work_dir>/<env>/bootstrap.log``，API 的
-``/logs`` 端点按字节游标读取该文件。
+进程生命周期（独立会话、进程组回收、超时、日志泵）在 ``process.CommandRunner``，
+这里只负责“跑什么命令、结果怎么解释”。stdout/stderr 合并落
+``<work_dir>/<env>/bootstrap.log``，API 的 ``/logs`` 端点按字节游标读取该文件。
 
 这里不做状态持久化：阶段回调交给 ``EnvironmentService``，Runner 只负责“执行 +
 产出结果/异常”，因此可以脱离数据库单测。
@@ -16,8 +16,6 @@ import hashlib
 import logging
 import os
 import re
-import signal
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +31,13 @@ from witty_service.application.openfuyao.console_health import (
 from witty_service.application.openfuyao.preflight import (
     PreflightReport,
     run_preflight,
+)
+from witty_service.application.openfuyao.process import (
+    CommandCancelled,
+    CommandNotAvailable,
+    CommandResult,
+    CommandRunner,
+    CommandTimeout,
 )
 from witty_service.config import OpenFuyaoSettings
 from witty_service.domain.openfuyao import BootstrapPhase, EnvironmentStatus, ErrorCode
@@ -76,13 +81,6 @@ class BootstrapResult:
     os_version: str | None
 
 
-@dataclass(frozen=True, slots=True)
-class CommandResult:
-    returncode: int
-    output: str
-    marker_seen: bool = False
-
-
 class BootstrapRunner:
     def __init__(
         self,
@@ -100,7 +98,7 @@ class BootstrapRunner:
         self._on_progress = on_progress
         self._log_path = self._work_dir / "bootstrap.log"
         self._log_handle: Any = None
-        self._process: asyncio.subprocess.Process | None = None
+        self._commands: CommandRunner | None = None
         self._cancel_event = asyncio.Event()
         self._cancelled = False
         self._phase = BootstrapPhase.preflight
@@ -155,7 +153,8 @@ class BootstrapRunner:
     async def cancel(self) -> None:
         self._cancelled = True
         self._cancel_event.set()
-        await self._terminate_process()
+        if self._commands is not None:
+            await self._commands.cancel()
 
     # ------------------------------------------------------------------
     # 执行步骤
@@ -350,15 +349,19 @@ class BootstrapRunner:
         return script
 
     def _subprocess_env(self) -> dict[str, str]:
-        env = os.environ.copy()
+        env = dict(os.environ)
         env["KUBECONFIG"] = self._settings.kubeconfig
         return env
 
-    def _privileged(self, argv: list[str]) -> list[str]:
-        """安装脚本与 bke 需要 root；后端以 witty-service 运行时经 sudo 提权。"""
-        if os.geteuid() == 0:
-            return argv
-        return ["sudo", "-n", *argv]
+    def _command(self) -> CommandRunner:
+        """进程执行器；工作目录与 env 在每次调用时取当前值，便于重试。"""
+        if self._commands is None:
+            self._commands = CommandRunner(
+                cwd=self._work_dir,
+                log=self._log,
+                env=self._subprocess_env(),
+            )
+        return self._commands
 
     async def _run_streaming(
         self,
@@ -369,129 +372,37 @@ class BootstrapRunner:
         marker: str | None = None,
     ) -> CommandResult:
         self._phase = phase
-        self._require_not_cancelled(phase)
-        self._work_dir.mkdir(parents=True, exist_ok=True)
-        argv = self._privileged(argv)
-        self._log(f"$ {' '.join(argv)}")
         try:
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(self._work_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
-                env=self._subprocess_env(),
+            return await self._command().run_streaming(
+                argv, timeout=timeout, marker=marker
             )
-        except FileNotFoundError as exc:
+        except CommandCancelled as exc:
+            raise BootstrapCancelled(phase=phase) from exc
+        except CommandTimeout as exc:
             raise BootstrapError(
-                ErrorCode.COMMAND_NOT_FOUND,
-                f"命令不存在：{argv[0]}",
-                phase=phase,
-                detail=str(exc),
+                ErrorCode.COMMAND_TIMEOUT, str(exc), phase=phase, detail=exc.output
             ) from exc
-        self._process = process
-        tail: deque[str] = deque(maxlen=200)
-        saw_marker = False
-
-        async def _pump() -> None:
-            nonlocal saw_marker
-            assert process.stdout is not None
-            while True:
-                raw = await process.stdout.readline()
-                if not raw:
-                    break
-                line = raw.decode("utf-8", errors="replace").rstrip()
-                if not line:
-                    continue
-                tail.append(line)
-                self._log(line)
-                if marker and marker in line:
-                    saw_marker = True
-
-        try:
-            await asyncio.wait_for(_pump(), timeout=timeout)
-            returncode = await process.wait()
-        except TimeoutError:
-            await self._terminate_process()
+        except CommandNotAvailable as exc:
             raise BootstrapError(
-                ErrorCode.COMMAND_TIMEOUT,
-                f"{Path(argv[0]).name} 执行超时（{int(timeout)}s）",
-                phase=phase,
-                detail="\n".join(tail),
-            ) from None
-        finally:
-            if self._process is process:
-                self._process = None
-
-        if self._cancelled:
-            raise BootstrapCancelled(phase=phase)
-        return CommandResult(
-            returncode=returncode,
-            output="\n".join(tail),
-            marker_seen=saw_marker,
-        )
+                ErrorCode.COMMAND_NOT_FOUND, str(exc), phase=phase, detail=str(exc)
+            ) from exc
 
     async def _run_capture(
         self, argv: list[str], *, timeout: float, phase: BootstrapPhase
     ) -> CommandResult:
         self._phase = phase
-        self._require_not_cancelled(phase)
-        self._work_dir.mkdir(parents=True, exist_ok=True)
-        argv = self._privileged(argv)
-        self._log(f"$ {' '.join(argv)}")
         try:
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(self._work_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
-                env=self._subprocess_env(),
-            )
-        except FileNotFoundError as exc:
+            return await self._command().run_capture(argv, timeout=timeout)
+        except CommandCancelled as exc:
+            raise BootstrapCancelled(phase=phase) from exc
+        except CommandTimeout as exc:
             raise BootstrapError(
-                ErrorCode.COMMAND_NOT_FOUND,
-                f"命令不存在：{argv[0]}",
-                phase=phase,
-                detail=str(exc),
+                ErrorCode.COMMAND_TIMEOUT, str(exc), phase=phase, detail=exc.output
             ) from exc
-        self._process = process
-        try:
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
-            returncode = process.returncode or 0
-        except TimeoutError:
-            await self._terminate_process()
+        except CommandNotAvailable as exc:
             raise BootstrapError(
-                ErrorCode.COMMAND_TIMEOUT,
-                f"{Path(argv[0]).name} 执行超时（{int(timeout)}s）",
-                phase=phase,
-            ) from None
-        finally:
-            if self._process is process:
-                self._process = None
-        if self._cancelled:
-            raise BootstrapCancelled(phase=phase)
-        output = stdout.decode("utf-8", errors="replace").strip()
-        if output:
-            self._log(output)
-        return CommandResult(returncode=returncode, output=output)
-
-    async def _terminate_process(self) -> None:
-        process = self._process
-        if process is None or process.returncode is not None:
-            return
-        try:
-            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            await asyncio.wait_for(process.wait(), timeout=5)
-        except TimeoutError:
-            try:
-                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-            except ProcessLookupError:
-                return
-            await process.wait()
+                ErrorCode.COMMAND_NOT_FOUND, str(exc), phase=phase, detail=str(exc)
+            ) from exc
 
     def _require_not_cancelled(self, phase: BootstrapPhase) -> None:
         if self._cancelled:
