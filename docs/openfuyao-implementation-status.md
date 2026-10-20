@@ -98,8 +98,8 @@ pnpm build       # pass
 
 ## 5. 仍需人工完成的验收
 
-1. 配置模型并实例化 `openfuyao-deployer`，在聊天里让 Agent 自行执行
-   `witty-service openfuyao deploy --confirm`（当前生产库 0 model，只有冒烟 Agent）；
+1. ~~配置模型并实例化 `openfuyao-deployer`~~ 已完成：生产库配置 `deepseek-flash`
+   （默认模型），模板已实例化，模型链路实测可对话；
 2. 在控制台完成阶段 2（单节点业务集群）与阶段 3（应用市场 nginx）；
 3. 记录 26.09 的兼容性偏差与耗时，失败则按决策点回退 22.03。
 
@@ -137,5 +137,23 @@ witty-service ALL=(root) NOPASSWD: /usr/local/bin/bke, /usr/bin/kubectl, /usr/bi
 `/proc/net/tcp{,6}` 的 LISTEN 端口。
 
 当前环境：`f39868ab-ac99-4bf9-a5ac-c27e2d0f0d82`，`console=https://192.168.122.146:30010`，
-`proxy=http://192.168.122.146:3002/`。该环境绑定的是冒烟用临时 Agent
-（无模型），仅用于验证编排与面板，不代替真实 `openfuyao-deployer` 对话验收。
+`proxy=http://192.168.122.146:3002/`，`status=ready`。该环境已从冒烟 Agent 转移到真实
+`openfuyao-deployer`（`46083619-6933-440c-92c4-ae8570bc003b`，模型 `deepseek-flash`），
+冒烟 Agent 已删除。工作目录按 environment_id 划分，转移不涉及目录搬迁。
+
+### 6.1 初始化模板报 500 的修复
+
+现象：智能体模板初始化返回 500，日志末行为
+`PermissionError: [Errno 13] Permission denied: .../agent-workspaces/<uuid>`。
+
+根因：`.witty/agent-workspaces` 曾被 root 创建（`root:root`），而 backend 以
+`witty-service` 运行，无权在其中新建 Agent 目录。属 bug 之外的环境状态问题。
+
+```bash
+chown -R witty-service:witty-service /var/lib/witty-service/.witty/agent-workspaces
+```
+
+预防：`/etc/systemd/system/witty-backend.service.d/workspace-perms.conf` 用
+`ExecStartPre=+/usr/bin/install -d -o witty-service -g witty-service -m 0755 ...`
+在每次启动时校正属主（systemd 的 `StateDirectory=` 只覆盖顶层目录，不含子目录）。
+系统化排障方法见 [troubleshooting-guide.md](troubleshooting-guide.md)。
