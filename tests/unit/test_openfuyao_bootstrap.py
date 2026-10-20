@@ -287,7 +287,9 @@ def test_parse_bke_version_falls_back_to_semver() -> None:
 
 
 def test_parse_bke_version_returns_none_for_log_only_output() -> None:
-    output = '{"time":"2026-10-20T19:40:02+08:00","level":"INFO","msg":"ologger config"}'
+    output = (
+        '{"time":"2026-10-20T19:40:02+08:00","level":"INFO","msg":"ologger config"}'
+    )
 
     assert _parse_bke_version(output) is None
     assert _parse_bke_version("") is None
