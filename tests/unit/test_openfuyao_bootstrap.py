@@ -17,6 +17,7 @@ from witty_service.application.openfuyao.bootstrap_runner import (
     CommandResult,
     _not_ready_pods,
     _only_os_matrix_failure,
+    _parse_bke_version,
 )
 from witty_service.application.openfuyao.console_health import (
     build_console_url,
@@ -195,7 +196,7 @@ async def test_runner_executes_steps_in_order(tmp_path) -> None:
     assert runner.phases[-1][1] == EnvironmentStatus.waiting_console
     assert result.console_url == "https://192.0.2.10:30010"
     assert result.proxy_url == "http://192.0.2.10:3002/"
-    assert result.bke_version == "bke version 26.9.0"
+    assert result.bke_version == "26.9.0"
     assert result.os_version == "26.09"
     assert runner.log_path.exists()
 
@@ -263,6 +264,43 @@ async def test_command_timeout_is_reported(tmp_path) -> None:
         )
 
     assert exc_info.value.code == "COMMAND_TIMEOUT"
+
+
+def test_parse_bke_version_reads_version_field() -> None:
+    """真实输出：两行 ologger JSON 日志 + version: 字段（线上曾把日志落成版本号）。"""
+    output = "\n".join(
+        [
+            '{"time":"2026-10-20T19:40:02+08:00","level":"INFO","msg":"ologger config"}',
+            '{"time":"2026-10-20T19:40:02+08:00","level":"INFO","msg":"Loaded manifest"}',
+            "version: latest",
+            "gitCommitID: 13fed2b3dae5dee7dce71bf9cb8fc25ceb6684e5",
+            "os/arch: linux/arm64",
+        ]
+    )
+
+    assert _parse_bke_version(output) == "latest"
+
+
+def test_parse_bke_version_falls_back_to_semver() -> None:
+    assert _parse_bke_version("bke version 26.9.0") == "26.9.0"
+    assert _parse_bke_version("openFuyao bke v1.2.3-rc.1 (linux)") == "1.2.3-rc.1"
+
+
+def test_parse_bke_version_returns_none_for_log_only_output() -> None:
+    output = '{"time":"2026-10-20T19:40:02+08:00","level":"INFO","msg":"ologger config"}'
+
+    assert _parse_bke_version(output) is None
+    assert _parse_bke_version("") is None
+    assert _parse_bke_version("no version here") is None
+
+
+def test_parse_bke_version_is_bounded() -> None:
+    long_value = "v" + "9" * 200
+
+    parsed = _parse_bke_version(f"version: {long_value}")
+
+    assert parsed is not None
+    assert len(parsed) == 64
 
 
 def test_not_ready_pods_parsing() -> None:

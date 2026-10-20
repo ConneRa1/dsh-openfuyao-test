@@ -15,6 +15,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import re
 import signal
 from collections import deque
 from collections.abc import Callable
@@ -215,7 +216,10 @@ class BootstrapRunner:
                     phase=BootstrapPhase.install_bke,
                     detail=preflight.output,
                 )
-        return _first_line(version.output)
+        bke_version = _parse_bke_version(version.output)
+        if bke_version is None:
+            self._log("WARN: 无法从 `bke version` 输出解析版本号，bke_version 留空")
+        return bke_version
 
     async def _bke_init(self) -> None:
         argv = [
@@ -292,7 +296,9 @@ class BootstrapRunner:
                     return
                 self._log("pods not ready: " + ", ".join(bad[:5]))
             else:
-                self._log("kubectl get pods failed: " + _first_line(result.output))
+                self._log(
+                    f"kubectl get pods failed: {_first_line(result.output) or '无输出'}"
+                )
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._cancel_event.wait(), timeout=5)
         raise BootstrapError(
@@ -513,6 +519,34 @@ def _first_line(text: str) -> str | None:
     for line in text.splitlines():
         if line.strip():
             return line.strip()[:64]
+    return None
+
+
+_VERSION_FIELD = re.compile(r"^\s*version\s*:\s*(\S+)\s*$", re.IGNORECASE)
+_SEMVER = re.compile(r"\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)\b")
+
+
+def _parse_bke_version(output: str) -> str | None:
+    """从 ``bke version`` 输出里取版本号，取不到就返回 ``None``。
+
+    ``bke`` 会先把 ologger 的 JSON 日志写到 stdout（首行形如
+    ``{"time":...,"level":"INFO","msg":"ologger config not found..."}``），
+    所以**不能取第一行**：线上库里的 ``bke_version`` 曾是半截日志。
+    这里先跳过 JSON 行，优先读 ``version: <值>`` 字段，其次找非日志行里的语义化版本。
+    """
+    text_lines = [
+        line.strip()
+        for line in output.splitlines()
+        if line.strip() and not line.strip().startswith("{")
+    ]
+    for line in text_lines:
+        match = _VERSION_FIELD.match(line)
+        if match:
+            return match.group(1)[:64]
+    for line in text_lines:
+        match = _SEMVER.search(line)
+        if match:
+            return match.group(1)[:64]
     return None
 
 
