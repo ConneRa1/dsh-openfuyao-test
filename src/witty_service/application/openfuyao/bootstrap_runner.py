@@ -34,7 +34,7 @@ from witty_service.application.openfuyao.preflight import (
     run_preflight,
 )
 from witty_service.config import OpenFuyaoSettings
-from witty_service.domain.openfuyao import BootstrapPhase, EnvironmentStatus
+from witty_service.domain.openfuyao import BootstrapPhase, EnvironmentStatus, ErrorCode
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ class BootstrapError(RuntimeError):
 
     def __init__(
         self,
-        code: str,
+        code: ErrorCode,
         message: str,
         *,
         phase: BootstrapPhase,
@@ -64,7 +64,7 @@ class BootstrapError(RuntimeError):
 
 class BootstrapCancelled(BootstrapError):
     def __init__(self, *, phase: BootstrapPhase) -> None:
-        super().__init__("BOOTSTRAP_CANCELLED", "Bootstrap 已取消", phase=phase)
+        super().__init__(ErrorCode.BOOTSTRAP_CANCELLED, "Bootstrap 已取消", phase=phase)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +120,7 @@ class BootstrapRunner:
                     f"{check.title}: {check.message}" for check in report.failed
                 )
                 raise BootstrapError(
-                    "PREFLIGHT_FAILED",
+                    ErrorCode.PREFLIGHT_FAILED,
                     "宿主机预检未通过",
                     phase=BootstrapPhase.preflight,
                     detail=failed,
@@ -169,7 +169,7 @@ class BootstrapRunner:
         )
         if result.returncode != 0:
             raise BootstrapError(
-                "BKE_INSTALL_FAILED",
+                ErrorCode.BKE_INSTALL_FAILED,
                 "BKE 安装脚本执行失败",
                 phase=BootstrapPhase.install_bke,
                 detail=result.output,
@@ -180,7 +180,7 @@ class BootstrapRunner:
         )
         if version.returncode != 0:
             raise BootstrapError(
-                "BKE_NOT_AVAILABLE",
+                ErrorCode.BKE_NOT_AVAILABLE,
                 "BKE 安装后无法执行 bke version",
                 phase=BootstrapPhase.install_bke,
                 detail=version.output,
@@ -210,7 +210,7 @@ class BootstrapRunner:
                 )
             else:
                 raise BootstrapError(
-                    "BKE_PREFLIGHT_FAILED",
+                    ErrorCode.BKE_PREFLIGHT_FAILED,
                     "bke preflight init 未通过",
                     phase=BootstrapPhase.install_bke,
                     detail=preflight.output,
@@ -238,14 +238,14 @@ class BootstrapRunner:
         )
         if result.returncode != 0:
             raise BootstrapError(
-                "BKE_INIT_FAILED",
+                ErrorCode.BKE_INIT_FAILED,
                 "bke init 执行失败",
                 phase=BootstrapPhase.bke_init,
                 detail=result.output,
             )
         if not result.marker_seen and COMPLETE_MARKER not in result.output:
             raise BootstrapError(
-                "BKE_INIT_INCOMPLETE",
+                ErrorCode.BKE_INIT_INCOMPLETE,
                 "bke init 退出但未出现完成标记",
                 phase=BootstrapPhase.bke_init,
                 detail=result.output,
@@ -267,7 +267,7 @@ class BootstrapRunner:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._cancel_event.wait(), timeout=5)
         raise BootstrapError(
-            "CONSOLE_TIMEOUT",
+            ErrorCode.CONSOLE_TIMEOUT,
             "控制台在超时时间内未就绪",
             phase=BootstrapPhase.wait_console,
             detail=console_url,
@@ -296,7 +296,7 @@ class BootstrapRunner:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._cancel_event.wait(), timeout=5)
         raise BootstrapError(
-            "PODS_NOT_READY",
+            ErrorCode.PODS_NOT_READY,
             "引导集群 Pod 未全部就绪",
             phase=BootstrapPhase.wait_console,
             detail=last_output,
@@ -317,7 +317,7 @@ class BootstrapRunner:
                 checksum_response.raise_for_status()
             except httpx.HTTPError as exc:
                 raise BootstrapError(
-                    "BKE_DOWNLOAD_FAILED",
+                    ErrorCode.BKE_DOWNLOAD_FAILED,
                     "BKE 下载脚本或校验和不可达",
                     phase=BootstrapPhase.install_bke,
                     detail=str(exc),
@@ -328,7 +328,7 @@ class BootstrapRunner:
         actual = hashlib.sha256(payload).hexdigest()
         if not expected or actual != expected:
             raise BootstrapError(
-                "BKE_CHECKSUM_MISMATCH",
+                ErrorCode.BKE_CHECKSUM_MISMATCH,
                 "BKE 下载脚本校验和不匹配",
                 phase=BootstrapPhase.install_bke,
                 detail=f"expected={expected} actual={actual}",
@@ -378,7 +378,7 @@ class BootstrapRunner:
             )
         except FileNotFoundError as exc:
             raise BootstrapError(
-                "COMMAND_NOT_FOUND",
+                ErrorCode.COMMAND_NOT_FOUND,
                 f"命令不存在：{argv[0]}",
                 phase=phase,
                 detail=str(exc),
@@ -408,7 +408,7 @@ class BootstrapRunner:
         except TimeoutError:
             await self._terminate_process()
             raise BootstrapError(
-                "COMMAND_TIMEOUT",
+                ErrorCode.COMMAND_TIMEOUT,
                 f"{Path(argv[0]).name} 执行超时（{int(timeout)}s）",
                 phase=phase,
                 detail="\n".join(tail),
@@ -444,7 +444,7 @@ class BootstrapRunner:
             )
         except FileNotFoundError as exc:
             raise BootstrapError(
-                "COMMAND_NOT_FOUND",
+                ErrorCode.COMMAND_NOT_FOUND,
                 f"命令不存在：{argv[0]}",
                 phase=phase,
                 detail=str(exc),
@@ -456,7 +456,7 @@ class BootstrapRunner:
         except TimeoutError:
             await self._terminate_process()
             raise BootstrapError(
-                "COMMAND_TIMEOUT",
+                ErrorCode.COMMAND_TIMEOUT,
                 f"{Path(argv[0]).name} 执行超时（{int(timeout)}s）",
                 phase=phase,
             ) from None

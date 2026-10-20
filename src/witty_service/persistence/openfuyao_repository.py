@@ -8,16 +8,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Final
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from witty_service.domain.openfuyao import (
+    ACTIVE_STATUSES,
+    EnvironmentStatus,
+    ErrorCode,
+)
 from witty_service.persistence.orm import OpenFuyaoEnvironmentORM
-
-ACTIVE_STATUSES: Final = ("bootstrapping", "waiting_console")
 
 
 class HostAlreadyClaimedError(Exception):
@@ -193,7 +196,7 @@ class OpenFuyaoRepository:
                     OpenFuyaoEnvironmentORM.status.in_(allowed_statuses),
                 )
                 .values(
-                    status="bootstrapping",
+                    status=EnvironmentStatus.bootstrapping,
                     phase="preflight",
                     progress=5,
                     error_code=None,
@@ -214,8 +217,8 @@ class OpenFuyaoRepository:
                 update(OpenFuyaoEnvironmentORM)
                 .where(OpenFuyaoEnvironmentORM.status.in_(ACTIVE_STATUSES))
                 .values(
-                    status="failed",
-                    error_code="BOOTSTRAP_INTERRUPTED",
+                    status=EnvironmentStatus.failed,
+                    error_code=ErrorCode.BOOTSTRAP_INTERRUPTED,
                     error_message="服务重启导致 Bootstrap 中断，可重新部署",
                     finished_at=now,
                     updated_at=now,

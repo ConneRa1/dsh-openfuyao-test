@@ -36,6 +36,8 @@ from witty_service.domain.openfuyao import (
     CANCELLABLE_STATUSES,
     BootstrapPhase,
     EnvironmentStatus,
+    ErrorCode,
+    is_terminal,
     progress_for_phase,
 )
 from witty_service.persistence.openfuyao_repository import (
@@ -95,7 +97,7 @@ def _now() -> datetime:
 
 def _not_found(environment_id: str) -> DomainError:
     return DomainError(
-        code="ENVIRONMENT_NOT_FOUND",
+        code=ErrorCode.ENVIRONMENT_NOT_FOUND,
         message="openFuyao 环境不存在",
         status_code=404,
         details={"environment_id": environment_id},
@@ -104,7 +106,7 @@ def _not_found(environment_id: str) -> DomainError:
 
 def _host_claimed(host: str) -> DomainError:
     return DomainError(
-        code="HOST_ALREADY_CLAIMED",
+        code=ErrorCode.HOST_ALREADY_CLAIMED,
         message="该宿主机已被其他 Agent 的 openFuyao 环境占用",
         status_code=409,
         details={"host": host},
@@ -157,7 +159,7 @@ class EnvironmentService:
     ) -> CreateResult:
         if self._agent_repository.get_agent(agent_id) is None:
             raise DomainError(
-                code="AGENT_NOT_FOUND",
+                code=ErrorCode.AGENT_NOT_FOUND,
                 message="Agent 不存在",
                 status_code=404,
                 details={"agent_id": agent_id},
@@ -184,7 +186,7 @@ class EnvironmentService:
                     progress=5 if report.ready else 0,
                     preflight_json=report.to_dict(),
                     os_version=_os_version(report),
-                    error_code=None if report.ready else "PREFLIGHT_FAILED",
+                    error_code=None if report.ready else ErrorCode.PREFLIGHT_FAILED,
                     error_message=None if report.ready else _preflight_message(report),
                     finished_at=None if report.ready else _now(),
                 )
@@ -232,7 +234,7 @@ class EnvironmentService:
                     self._settings.proxy_port,
                     scheme=self._settings.proxy_scheme,
                 ),
-                error_code=None if ready else "PREFLIGHT_FAILED",
+                error_code=None if ready else ErrorCode.PREFLIGHT_FAILED,
                 error_message=None if ready else _preflight_message(report),
             )
         except HostAlreadyClaimedError as exc:
@@ -252,21 +254,21 @@ class EnvironmentService:
     ) -> OpenFuyaoEnvironmentRecord:
         if not confirm:
             raise DomainError(
-                code="CONFIRM_REQUIRED",
+                code=ErrorCode.CONFIRM_REQUIRED,
                 message="Bootstrap 为破坏性操作，需要 confirm=true",
                 status_code=400,
             )
         record = self.get_environment(environment_id)
         if record.status == EnvironmentStatus.ready:
             raise DomainError(
-                code="ENVIRONMENT_ALREADY_READY",
+                code=ErrorCode.ENVIRONMENT_ALREADY_READY,
                 message="环境已就绪，无需重复部署",
                 status_code=409,
                 details={"status": record.status},
             )
         if record.status not in BOOTSTRAP_ALLOWED_FROM:
             raise DomainError(
-                code="BOOTSTRAP_IN_PROGRESS",
+                code=ErrorCode.BOOTSTRAP_IN_PROGRESS,
                 message="该环境正在部署或不可部署",
                 status_code=409,
                 details={"status": record.status},
@@ -280,12 +282,12 @@ class EnvironmentService:
                 phase=BootstrapPhase.preflight,
                 progress=0,
                 preflight_json=report.to_dict(),
-                error_code="PREFLIGHT_FAILED",
+                error_code=ErrorCode.PREFLIGHT_FAILED,
                 error_message=_preflight_message(report),
                 finished_at=_now(),
             )
             raise DomainError(
-                code="PREFLIGHT_FAILED",
+                code=ErrorCode.PREFLIGHT_FAILED,
                 message="宿主机预检未通过，请修复后重试",
                 status_code=400,
                 details={"preflight": report.to_dict()},
@@ -296,7 +298,7 @@ class EnvironmentService:
         ):
             current = self._repository.get(environment_id)
             raise DomainError(
-                code="BOOTSTRAP_IN_PROGRESS",
+                code=ErrorCode.BOOTSTRAP_IN_PROGRESS,
                 message="该环境已有 Bootstrap 在执行",
                 status_code=409,
                 details={"status": current.status if current else None},
@@ -360,7 +362,7 @@ class EnvironmentService:
                 environment_id,
                 status=EnvironmentStatus.failed,
                 phase=BootstrapPhase.bke_init,
-                error_code="BOOTSTRAP_INTERNAL_ERROR",
+                error_code=ErrorCode.BOOTSTRAP_INTERNAL_ERROR,
                 error_message="Bootstrap 内部错误，请查看服务日志",
                 finished_at=_now(),
             )
@@ -409,7 +411,7 @@ class EnvironmentService:
         record = self.get_environment(environment_id)
         if record.status not in CANCELLABLE_STATUSES:
             raise DomainError(
-                code="ENVIRONMENT_NOT_CANCELLABLE",
+                code=ErrorCode.ENVIRONMENT_NOT_CANCELLABLE,
                 message="该环境当前不可取消",
                 status_code=409,
                 details={"status": record.status},
@@ -422,16 +424,13 @@ class EnvironmentService:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(asyncio.shield(task), timeout=10)
         current = self._repository.get(environment_id)
-        if current is not None and current.status in (
-            EnvironmentStatus.ready,
-            EnvironmentStatus.failed,
-        ):
-            # 取消与完成竞态：已经落定的终态不被覆盖。
+        if current is not None and is_terminal(current.status):
+            # 取消与完成竞态：已经落定的终态（含 cancelled 自身）不被覆盖。
             return current
         return self._repository.update(
             environment_id,
             status=EnvironmentStatus.cancelled,
-            error_code="BOOTSTRAP_CANCELLED",
+            error_code=ErrorCode.BOOTSTRAP_CANCELLED,
             error_message="Bootstrap 已取消",
             finished_at=_now(),
         ) or self.get_environment(environment_id)
