@@ -5,6 +5,17 @@
 
 Agent 侧约定：``WITTY_AGENT_ID`` 由沙箱注入，``AUTH_TOKEN`` 从服务进程环境继承；
 两个变量都缺失时用显式参数覆盖。
+
+**退出码契约**（见 ``domain.openfuyao.ExitCode``，Agent 只靠它分流）::
+
+    0  成功；包含幂等：环境已 ready、Bootstrap 已在跑等“已是目标态”
+    1  执行错误：参数缺失、API 不可达、业务错误
+    2  需要确认：预检通过但未带 --confirm
+    3  预检未通过：门禁失败，未执行任何特权动作
+    4  已到终态但不是目标态：failed / cancelled
+
+``--json`` 时 stdout **只有一个 JSON 文档**，进度行（每阶段一行的人类可读输出）
+一律不打印，避免 Agent 需要“取最后一段 JSON”。
 """
 
 from __future__ import annotations
@@ -25,9 +36,15 @@ from witty_service.application.openfuyao.preflight import (
     PreflightReport,
     run_preflight,
 )
+from witty_service.domain.openfuyao import (
+    ACTIVE_STATUSES,
+    EnvironmentStatus,
+    ErrorCode,
+    ExitCode,
+    is_terminal,
+)
 
 _STATUS_MARK = {"pass": "PASS", "warn": "WARN", "fail": "FAIL"}
-_TERMINAL = {"ready", "failed", "cancelled"}
 _DEFAULT_TIMEOUT = 900.0
 
 
@@ -74,6 +91,15 @@ def _print_environment(environment: dict[str, Any]) -> None:
         )
 
 
+def _print_plan(plan: Sequence[dict[str, Any]]) -> None:
+    if not plan:
+        return
+    print("")
+    print("计划：")
+    for step in plan:
+        print(f"  {step['progress']:>3}%  {step['title']}")
+
+
 class _Client:
     def __init__(self, base_url: str, token: str) -> None:
         self._client = httpx.Client(
@@ -89,7 +115,7 @@ class _Client:
         try:
             response = self._client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
-            raise _ApiError(0, "API_UNREACHABLE", str(exc)) from exc
+            raise _ApiError(0, ErrorCode.API_UNREACHABLE, str(exc)) from exc
         if response.status_code >= 400:
             try:
                 payload = response.json()
@@ -99,11 +125,11 @@ class _Client:
             if isinstance(error, dict):
                 raise _ApiError(
                     response.status_code,
-                    str(error.get("code") or "API_ERROR"),
+                    str(error.get("code") or ErrorCode.API_ERROR),
                     str(error.get("message") or response.text),
                     error.get("details"),
                 )
-            raise _ApiError(response.status_code, "API_ERROR", response.text)
+            raise _ApiError(response.status_code, ErrorCode.API_ERROR, response.text)
         if response.status_code == 204 or not response.content:
             return None
         return response.json()
@@ -156,7 +182,7 @@ def _token(args: argparse.Namespace) -> str:
 
     token = args.token or os.getenv("AUTH_TOKEN") or get_settings().auth_token
     if not token:
-        raise _ApiError(0, "TOKEN_REQUIRED", "缺少 AUTH_TOKEN/--token")
+        raise _ApiError(0, ErrorCode.TOKEN_REQUIRED, "缺少 AUTH_TOKEN/--token")
     return token
 
 
@@ -165,7 +191,7 @@ def _agent_id(args: argparse.Namespace) -> str:
     if not agent_id:
         raise _ApiError(
             0,
-            "AGENT_ID_REQUIRED",
+            ErrorCode.AGENT_ID_REQUIRED,
             "缺少 WITTY_AGENT_ID/--agent-id（Agent 沙箱会自动注入前者）",
         )
     return agent_id
@@ -180,7 +206,9 @@ def _latest_environment(client: _Client, args: argparse.Namespace) -> dict[str, 
         return client.get(args.environment_id)
     environments = client.list(_agent_id(args))
     if not environments:
-        raise _ApiError(404, "ENVIRONMENT_NOT_FOUND", "该 Agent 还没有 openFuyao 环境")
+        raise _ApiError(
+            404, ErrorCode.ENVIRONMENT_NOT_FOUND, "该 Agent 还没有 openFuyao 环境"
+        )
     return environments[0]
 
 
@@ -190,6 +218,7 @@ def _poll(
     *,
     timeout: float,
     interval: float,
+    quiet: bool = False,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     current = environment
@@ -197,14 +226,62 @@ def _poll(
     while True:
         signature = (current["status"], current["phase"])
         if signature != previous:
-            _print_environment(current)
+            if not quiet:
+                _print_environment(current)
             previous = signature
-        if current["status"] in _TERMINAL:
+        if is_terminal(current["status"]):
             return current
         if time.monotonic() >= deadline:
-            raise _ApiError(0, "WAIT_TIMEOUT", f"等待超过 {int(timeout)}s")
+            raise _ApiError(0, ErrorCode.WAIT_TIMEOUT, f"等待超过 {int(timeout)}s")
         time.sleep(interval)
         current = client.get(current["id"])
+
+
+def _terminal_exit(environment: dict[str, Any]) -> ExitCode:
+    """终态非 ready 才算失败；还在执行中（如 status 的 preflight）仍是 0。"""
+    status = environment["status"]
+    if status == EnvironmentStatus.ready:
+        return ExitCode.OK
+    if is_terminal(status):
+        return ExitCode.FAILED
+    return ExitCode.OK
+
+
+def _finish(
+    args: argparse.Namespace,
+    *,
+    exit_code: ExitCode,
+    summary: str,
+    environment: dict[str, Any] | None,
+    preflight: dict[str, Any],
+    plan: Sequence[dict[str, Any]],
+    needs_confirm: bool = False,
+) -> int:
+    """统一收尾：``--json`` 只输出一个文档，否则打印预检、计划与结论。"""
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "exit_code": int(exit_code),
+                    "needs_confirm": needs_confirm,
+                    "summary": summary,
+                    "environment": environment,
+                    "preflight": preflight,
+                    "plan": list(plan),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return int(exit_code)
+
+    _print_preflight(_report_from_dict(preflight))
+    _print_plan(plan)
+    print("")
+    print(summary)
+    if environment is not None:
+        _print_environment(environment)
+    return int(exit_code)
 
 
 def _cmd_preflight(args: argparse.Namespace) -> int:
@@ -213,56 +290,112 @@ def _cmd_preflight(args: argparse.Namespace) -> int:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
     else:
         _print_preflight(report)
-    return 0 if report.ready else 1
+    return int(ExitCode.OK if report.ready else ExitCode.PREFLIGHT_FAILED)
 
 
 def _cmd_deploy(args: argparse.Namespace) -> int:
     client = _client(args)
     try:
         result = client.create_environment(_agent_id(args), dry_run=args.dry_run)
-        report = result["preflight"]
-        if args.json:
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        else:
-            _print_preflight(_report_from_dict(report))
-            print("")
-            print("计划：")
-            for step in result["plan"]:
-                print(f"  {step['progress']:>3}%  {step['title']}")
-        if not report.get("ready"):
-            return 2
+        preflight = result["preflight"]
+        plan = result.get("plan") or []
         environment = result.get("environment")
+
+        def finish(
+            exit_code: ExitCode,
+            summary: str,
+            env: dict[str, Any] | None = environment,
+            *,
+            needs_confirm: bool = False,
+        ) -> int:
+            return _finish(
+                args,
+                exit_code=exit_code,
+                summary=summary,
+                environment=env,
+                preflight=preflight,
+                plan=plan,
+                needs_confirm=needs_confirm,
+            )
+
+        if not preflight.get("ready"):
+            return finish(
+                ExitCode.PREFLIGHT_FAILED,
+                "预检未通过，未执行任何特权动作；按上面列出的失败项逐项修复后重试。",
+            )
         if environment is None:
-            print("dry-run：未创建环境。")
-            return 0
-        if not args.json:
-            _print_environment(environment)
+            return finish(ExitCode.OK, "dry-run：未创建环境。")
+
+        status = environment["status"]
+        # 幂等：已 ready 不重复部署，直接给出地址（方案 §4.2）
+        if status == EnvironmentStatus.ready:
+            proxy = environment.get("proxy_url") or ""
+            return finish(
+                ExitCode.OK,
+                f"环境已就绪，无需重复部署。{('代理地址：' + proxy) if proxy else ''}",
+            )
+        # 已在执行：不重复启动，跟随现有进度（重复执行同一条命令必须成功）
+        if status in ACTIVE_STATUSES:
+            current = environment
+            if args.wait:
+                current = _poll(
+                    client,
+                    environment,
+                    timeout=args.timeout,
+                    interval=args.interval,
+                    quiet=args.json,
+                )
+                if current["status"] == EnvironmentStatus.ready:
+                    return finish(
+                        ExitCode.OK,
+                        f"部署完成，代理地址：{current.get('proxy_url') or ''}",
+                        current,
+                    )
+                return finish(
+                    ExitCode.FAILED,
+                    f"部署未成功结束：{current['status']}",
+                    current,
+                )
+            return finish(
+                ExitCode.OK,
+                "Bootstrap 已在执行中，未重复启动；用 "
+                "`witty-service openfuyao status --wait` 跟踪。",
+            )
+
         if not args.confirm:
-            print("预检通过；加 --confirm 才会执行破坏性的 bke init。")
-            return 0
+            return finish(
+                ExitCode.CONFIRM_REQUIRED,
+                "预检通过；加 --confirm 才会执行破坏性的 bke init。",
+                needs_confirm=True,
+            )
 
         started = client.bootstrap(environment["id"])
-        if args.json:
-            print(json.dumps(started, ensure_ascii=False, indent=2))
-        else:
-            _print_environment(started)
-        current = started
-        if args.wait:
-            current = _poll(
-                client,
+        if not args.wait:
+            return finish(
+                ExitCode.OK,
+                "Bootstrap 已在后台启动；用 `witty-service openfuyao status "
+                f"--environment-id {environment['id']} --wait` 跟踪。",
                 started,
-                timeout=args.timeout,
-                interval=args.interval,
             )
-            if current["status"] == "ready" and current.get("proxy_url"):
-                print(f"部署完成，代理地址：{current['proxy_url']}")
-        else:
-            print(
-                "Bootstrap 已在后台启动；用 "
-                "`witty-service openfuyao status --environment-id "
-                f"{environment['id']} --wait` 跟踪。"
+        current = _poll(
+            client,
+            started,
+            timeout=args.timeout,
+            interval=args.interval,
+            quiet=args.json,
+        )
+        if current["status"] == EnvironmentStatus.ready:
+            return finish(
+                ExitCode.OK,
+                f"部署完成，代理地址：{current.get('proxy_url') or ''}",
+                current,
             )
-        return 0 if current["status"] in ("ready", "bootstrapping") else 3
+        return finish(
+            ExitCode.FAILED,
+            f"部署未成功结束：{current['status']}"
+            f"{('（' + current['error_code'] + '）') if current.get('error_code') else ''}",
+            current,
+        )
     finally:
         client.close()
 
@@ -273,13 +406,17 @@ def _cmd_status(args: argparse.Namespace) -> int:
         environment = _latest_environment(client, args)
         if args.wait:
             environment = _poll(
-                client, environment, timeout=args.timeout, interval=args.interval
+                client,
+                environment,
+                timeout=args.timeout,
+                interval=args.interval,
+                quiet=args.json,
             )
         if args.json:
             print(json.dumps(environment, ensure_ascii=False, indent=2))
         else:
             _print_environment(environment)
-        return 0 if environment["status"] not in ("failed", "cancelled") else 3
+        return int(_terminal_exit(environment))
     finally:
         client.close()
 
@@ -293,7 +430,7 @@ def _cmd_cancel(args: argparse.Namespace) -> int:
             print(json.dumps(cancelled, ensure_ascii=False, indent=2))
         else:
             _print_environment(cancelled)
-        return 0
+        return int(ExitCode.OK)
     finally:
         client.close()
 
@@ -309,13 +446,13 @@ def _cmd_logs(args: argparse.Namespace) -> int:
                 print(line)
             cursor = page["next_cursor"]
             if not args.follow or page["eof"]:
-                return 0
+                return int(ExitCode.OK)
             environment = client.get(environment["id"])
-            if environment["status"] in _TERMINAL:
+            if is_terminal(environment["status"]):
                 page = client.logs(environment["id"], cursor)
                 for line in page["lines"]:
                     print(line)
-                return 0
+                return int(ExitCode.OK)
             time.sleep(args.interval)
     finally:
         client.close()
@@ -344,13 +481,17 @@ def _add_api_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--token", default=None, help="Bearer Token")
     parser.add_argument("--agent-id", default=None, help="Agent ID")
     parser.add_argument("--environment-id", default=None, help="指定 Environment")
-    parser.add_argument("--json", action="store_true", help="输出 JSON")
+    parser.add_argument("--json", action="store_true", help="输出单个 JSON 文档")
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="witty-service openfuyao",
         description="openFuyao Bootstrap 编排工具",
+        epilog=(
+            "退出码：0 成功（含幂等）/ 1 执行错误 / 2 需要 --confirm / "
+            "3 预检未通过 / 4 终态非目标"
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -399,7 +540,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(args.handler(args))
     except _ApiError as exc:
         print(f"错误 [{exc.code}] {exc}", file=sys.stderr)
-        return 1
+        return int(ExitCode.ERROR)
 
 
 if __name__ == "__main__":
