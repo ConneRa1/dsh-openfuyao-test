@@ -538,6 +538,7 @@ class OpenFuyaoSettings:
         OPENFUYAO_PROXY_PORT: Nginx 网关端口，默认 3002
         OPENFUYAO_PROXY_SCHEME: 网关访问协议（http/https），默认 http
         OPENFUYAO_ENABLE_NTP: 是否让 bke 配置 NTP，默认 true；UDP/123 不通时置 false
+        OPENFUYAO_ALLOW_UNSUPPORTED_OS: 仅 OS/内核矩阵失败时是否继续，默认 false
         OPENFUYAO_INIT_TIMEOUT_SECONDS: bke init 超时，默认 900
         OPENFUYAO_CONSOLE_TIMEOUT_SECONDS: 等待控制台就绪超时，默认 300
         OPENFUYAO_KUBECONFIG: 引导集群 kubeconfig，默认 k3s 路径
@@ -555,6 +556,8 @@ class OpenFuyaoSettings:
     proxy_port: int = 3002
     proxy_scheme: str = "http"
     enable_ntp: bool = True
+    #: 仅当 bke preflight 的失败项只有 OS/内核矩阵时允许继续（26.09 已知例外）
+    allow_unsupported_os: bool = False
     init_timeout_seconds: float = 900.0
     console_timeout_seconds: float = 300.0
     kubeconfig: str = "/etc/rancher/k3s/k3s.yaml"
@@ -573,6 +576,10 @@ class OpenFuyaoSettings:
             proxy_port=int(os.getenv("OPENFUYAO_PROXY_PORT", "3002")),
             proxy_scheme=os.getenv("OPENFUYAO_PROXY_SCHEME", "http").lower(),
             enable_ntp=os.getenv("OPENFUYAO_ENABLE_NTP", "true").lower()
+            in ("1", "true", "yes"),
+            allow_unsupported_os=os.getenv(
+                "OPENFUYAO_ALLOW_UNSUPPORTED_OS", "false"
+            ).lower()
             in ("1", "true", "yes"),
             init_timeout_seconds=float(
                 os.getenv("OPENFUYAO_INIT_TIMEOUT_SECONDS", "900")

@@ -201,12 +201,20 @@ class BootstrapRunner:
             phase=BootstrapPhase.install_bke,
         )
         if preflight.returncode != 0:
-            raise BootstrapError(
-                "BKE_PREFLIGHT_FAILED",
-                "bke preflight init 未通过",
-                phase=BootstrapPhase.install_bke,
-                detail=preflight.output,
-            )
+            if self._settings.allow_unsupported_os and _only_os_matrix_failure(
+                preflight.output
+            ):
+                self._log(
+                    "WARN: bke preflight 仅报告 OS/内核矩阵不匹配，"
+                    "按 OPENFUYAO_ALLOW_UNSUPPORTED_OS 继续"
+                )
+            else:
+                raise BootstrapError(
+                    "BKE_PREFLIGHT_FAILED",
+                    "bke preflight init 未通过",
+                    phase=BootstrapPhase.install_bke,
+                    detail=preflight.output,
+                )
         return _first_line(version.output)
 
     async def _bke_init(self) -> None:
@@ -506,6 +514,18 @@ def _os_version_from_report(report: PreflightReport) -> str | None:
             value = check.detail.get("version")
             return str(value) if value else None
     return None
+
+
+def _only_os_matrix_failure(output: str) -> bool:
+    """判断 preflight 失败是否只有“发行版/内核矩阵”两项（26.09 已知例外）。"""
+    failed_rows = [
+        line for line in output.splitlines() if "│" in line and "失败" in line
+    ]
+    if len(failed_rows) != 2:
+        return False
+    return any("主机发行版" in line for line in failed_rows) and any(
+        "内核兼容性" in line for line in failed_rows
+    )
 
 
 def _not_ready_pods(output: str) -> list[str]:

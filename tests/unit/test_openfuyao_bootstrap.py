@@ -16,6 +16,7 @@ from witty_service.application.openfuyao.bootstrap_runner import (
     BootstrapRunner,
     CommandResult,
     _not_ready_pods,
+    _only_os_matrix_failure,
 )
 from witty_service.application.openfuyao.console_health import (
     build_console_url,
@@ -117,6 +118,7 @@ class _FakeRunner(BootstrapRunner):
         self.calls: list[str] = []
         self.phases: list[tuple[BootstrapPhase, EnvironmentStatus]] = []
         self.fail_init = False
+        self.preflight_output: str | None = None
 
     def _record_progress(
         self,
@@ -144,6 +146,8 @@ class _FakeRunner(BootstrapRunner):
             return CommandResult(0, "installed")
         if argv[:2] == ["bke", "preflight"]:
             self.calls.append("bke_preflight")
+            if self.preflight_output is not None:
+                return CommandResult(3, self.preflight_output)
             return CommandResult(0, "preflight ok")
         self.calls.append("bke_init")
         if self.fail_init:
@@ -271,3 +275,42 @@ def test_not_ready_pods_parsing() -> None:
     )
 
     assert _not_ready_pods(output) == ["openfuyao-system/console-1=Pending"]
+
+
+_OS_MATRIX_TABLE = """\
+┌────────┬───────────────┬────────────────────┬─────────────────┐
+│  状态  │ 检查项        │ 目标               │ 原因及建议      │
+├────────┼───────────────┼────────────────────┼─────────────────┤
+│  失败  │ 主机发行版及版 │ 节点：bootstrap    │ 发行版不受支持  │
+│  失败  │ 内核兼容性    │ 节点：bootstrap    │ 内核不在矩阵中  │
+└────────┴───────────────┴────────────────────┴─────────────────┘
+"""
+
+
+def test_only_os_matrix_failure_matches_known_exception() -> None:
+    assert _only_os_matrix_failure(_OS_MATRIX_TABLE) is True
+    assert _only_os_matrix_failure("│  失败  │ 端口占用 │") is False
+    assert _only_os_matrix_failure("") is False
+
+
+@pytest.mark.asyncio
+async def test_runner_can_continue_on_os_matrix_only_failure(tmp_path) -> None:
+    runner = _FakeRunner(tmp_path)
+    runner._settings = OpenFuyaoSettings(allow_unsupported_os=True)
+    runner.preflight_output = _OS_MATRIX_TABLE
+
+    result = await runner.run(preflight=_report())
+
+    assert "bke_init" in runner.calls
+    assert result.console_url == "https://192.0.2.10:30010"
+
+
+@pytest.mark.asyncio
+async def test_runner_blocks_os_matrix_failure_by_default(tmp_path) -> None:
+    runner = _FakeRunner(tmp_path)
+    runner.preflight_output = _OS_MATRIX_TABLE
+
+    with pytest.raises(BootstrapError) as exc_info:
+        await runner.run(preflight=_report())
+
+    assert exc_info.value.code == "BKE_PREFLIGHT_FAILED"
