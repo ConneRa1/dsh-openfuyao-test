@@ -157,3 +157,44 @@ chown -R witty-service:witty-service /var/lib/witty-service/.witty/agent-workspa
 `ExecStartPre=+/usr/bin/install -d -o witty-service -g witty-service -m 0755 ...`
 在每次启动时校正属主（systemd 的 `StateDirectory=` 只覆盖顶层目录，不含子目录）。
 系统化排障方法见 [troubleshooting-guide.md](troubleshooting-guide.md)。
+
+---
+
+## 7. 2026-10-20：阶段 2/3 前置修复（本分支增量）
+
+在做阶段 2/3 之前先把“复用骨架”补齐，避免新代码复制旧实现。改动全部是加法，
+既有 REST/CLI 契约只修了与方案不一致的地方（退出码）。
+
+| 提交 | 内容 |
+| --- | --- |
+| `eb24833` | `ErrorCode`/`ExitCode` 枚举收敛；`ACTIVE_STATUSES`、`is_terminal`、`build_plan`；`progress_for_phase` 支持自定义映射 |
+| `9bb0172` | `_parse_bke_version`：跳过 ologger JSON 行，取 `version:` 字段；修 `_wait_pods` 空输出拼接崩溃 |
+| `d815d95` | CLI 退出码契约（0/1/2/3/4）、`--confirm` 返回 2、ready 幂等返回 0、`--json` 单文档 |
+| `307a5ed` | 预检拆 `Gate.bootstrap` / `Gate.node`；`valid_node_hostname`（RFC 1123） |
+| `605211f` | `process.CommandRunner`：独立会话 + 进程组回收 + 超时 + 日志泵 |
+| `1becfe1` | `log_tail`：字节游标日志读取与截断 |
+| `1c988c3` | `resource_state`：`UNSET` 哨兵、条件占位、中断恢复（渠道仓储同步复用） |
+
+新增模块：
+
+```text
+src/witty_service/application/openfuyao/process.py      受控子进程执行
+src/witty_service/application/openfuyao/log_tail.py     字节游标日志
+src/witty_service/persistence/resource_state.py         通用仓储操作
+tests/unit/test_openfuyao_domain.py                     ErrorCode/ExitCode 契约
+tests/unit/test_openfuyao_process.py                    执行器
+tests/unit/test_openfuyao_log_tail.py                   日志读取
+tests/unit/persistence/test_resource_state.py           占位与恢复
+```
+
+验证（2026-10-20，本机）：
+
+```bash
+.venv/bin/python -m pytest -q tests/unit/test_openfuyao_*.py \
+  tests/unit/api/test_openfuyao_api.py tests/unit/persistence/test_openfuyao_repository.py \
+  tests/unit/test_runtime_openfuyao_event.py tests/unit/test_agent_template.py
+# 136 passed
+```
+
+行为变化（对 Agent 可见）：`deploy` 不带 `--confirm` 现在退出 2（原本 0）；预检失败退出 3
+（原本 2）；终态失败退出 4（原本 3）；`--json` 只输出一个文档。`status` 在非终态仍返回 0。

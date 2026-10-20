@@ -134,6 +134,21 @@ witty-service openfuyao app status --release nginx-demo --json
 - 带 `--confirm` 才执行；agent 在调用前必须先向用户复述影响面（删/建/覆盖），得到明确同意；
 - 取消：`cluster cancel`/`app cancel`，agent 可在用户改口时调用。
 
+> **实施备注（2026-10-20，已落地，阶段 2/3 直接复用）**：退出码已收敛为
+> `witty_service.domain.openfuyao.ExitCode`，并修正了原实现“不带 `--confirm` 返回 0”的偏差：
+>
+> | 码 | 含义 | 阶段 2/3 对应 |
+> | --- | --- | --- |
+> | 0 | 成功；**含幂等**（已 ready / 已在执行都返回 0） | 已 ready 的集群、已 deployed 的应用 |
+> | 1 | 执行错误（参数、API 不可达、业务 4xx/5xx） | — |
+> | 2 | 需要确认（预检通过但缺 `--confirm`；`--json` 带 `needs_confirm=true`） | `cluster create` / `app install` |
+> | 3 | 预检未通过（未执行任何特权动作） | `Gate.node` 失败 |
+> | 4 | 已到终态但不是目标态（`failed`/`cancelled`） | 创建超时、安装失败、用户取消 |
+>
+> 同时 `--json` 已改为**只输出一个文档**（deploy 为
+> `{exit_code, needs_confirm, summary, environment, preflight, plan}` 信封），
+> 新增子命令请复用 `openfuyao_cli._finish`，不要各自打印多段 JSON。
+
 ### 4.4 错误码（agent 可直接翻译给用户）
 
 ```text
