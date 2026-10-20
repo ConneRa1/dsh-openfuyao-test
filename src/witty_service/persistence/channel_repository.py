@@ -28,20 +28,10 @@ from witty_service.persistence.orm import (
     ChannelRouteORM,
     ProvisioningStatus,
 )
+from witty_service.persistence.resource_state import UNSET
+from witty_service.persistence.resource_state import Unset as _Unset
 
-
-class _Unset:
-    """显式区分"未提供该字段"与"把该字段置空"（`None` 表示置空）。"""
-
-    __slots__ = ()
-
-    def __repr__(self) -> str:
-        return "UNSET"
-
-
-#: `update_*` 方法的哨兵值
-UNSET = _Unset()
-
+#: `update_*` 方法的哨兵值；与 openFuyao 资源表共用一份实现
 _OptionalStr = "str | None | _Unset"
 
 
@@ -532,7 +522,9 @@ class ChannelRepository:
         with self._session_factory() as session:
             query = session.query(ChannelDeliveryORM)
             if instance_id is not None:
-                query = query.filter(ChannelDeliveryORM.channel_instance_id == instance_id)
+                query = query.filter(
+                    ChannelDeliveryORM.channel_instance_id == instance_id
+                )
             if route_id is not None:
                 query = query.filter(ChannelDeliveryORM.route_id == route_id)
             if turn_id is not None:
@@ -650,7 +642,9 @@ class ChannelRepository:
         )
 
     @staticmethod
-    def _to_provisioning_record(row: ChannelProvisioningORM) -> ChannelProvisioningRecord:
+    def _to_provisioning_record(
+        row: ChannelProvisioningORM,
+    ) -> ChannelProvisioningRecord:
         return ChannelProvisioningRecord(
             id=row.id,
             channel=row.channel,

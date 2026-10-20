@@ -7,38 +7,32 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from witty_service.domain.openfuyao import (
     ACTIVE_STATUSES,
+    BootstrapPhase,
     EnvironmentStatus,
     ErrorCode,
 )
 from witty_service.persistence.orm import OpenFuyaoEnvironmentORM
+from witty_service.persistence.resource_state import (
+    UNSET,
+    Unset,
+    conditional_acquire,
+    mark_interrupted,
+    utcnow,
+)
 
 
 class HostAlreadyClaimedError(Exception):
     """同一 host 已被其他 Environment 占用（数据库唯一约束兜底）。"""
-
-
-class _Unset:
-    __slots__ = ()
-
-    def __repr__(self) -> str:
-        return "UNSET"
-
-
-UNSET = _Unset()
-
-
-def utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 @dataclass(slots=True)
@@ -60,6 +54,10 @@ class OpenFuyaoEnvironmentRecord:
     updated_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+
+
+#: 兼容既有调用方的旧名字
+_Unset = Unset
 
 
 class OpenFuyaoRepository:
@@ -142,18 +140,18 @@ class OpenFuyaoRepository:
         self,
         environment_id: str,
         *,
-        status: str | _Unset | None = UNSET,
-        phase: str | _Unset | None = UNSET,
-        progress: int | _Unset | None = UNSET,
-        console_url: str | _Unset | None = UNSET,
-        proxy_url: str | _Unset | None = UNSET,
-        bke_version: str | _Unset | None = UNSET,
-        os_version: str | _Unset | None = UNSET,
-        preflight_json: dict[str, Any] | _Unset | None = UNSET,
-        error_code: str | _Unset | None = UNSET,
-        error_message: str | _Unset | None = UNSET,
-        started_at: datetime | _Unset | None = UNSET,
-        finished_at: datetime | _Unset | None = UNSET,
+        status: str | Unset | None = UNSET,
+        phase: str | Unset | None = UNSET,
+        progress: int | Unset | None = UNSET,
+        console_url: str | Unset | None = UNSET,
+        proxy_url: str | Unset | None = UNSET,
+        bke_version: str | Unset | None = UNSET,
+        os_version: str | Unset | None = UNSET,
+        preflight_json: dict[str, Any] | Unset | None = UNSET,
+        error_code: str | Unset | None = UNSET,
+        error_message: str | Unset | None = UNSET,
+        started_at: datetime | Unset | None = UNSET,
+        finished_at: datetime | Unset | None = UNSET,
     ) -> OpenFuyaoEnvironmentRecord | None:
         values: dict[str, Any] = {"updated_at": utcnow()}
         candidates = {
@@ -189,43 +187,39 @@ class OpenFuyaoRepository:
         """原子地把环境推进到 bootstrapping；已在进行中或被禁止时返回 False。"""
         now = utcnow()
         with self._session_factory() as session:
-            result = session.execute(
-                update(OpenFuyaoEnvironmentORM)
-                .where(
-                    OpenFuyaoEnvironmentORM.id == environment_id,
-                    OpenFuyaoEnvironmentORM.status.in_(allowed_statuses),
-                )
-                .values(
-                    status=EnvironmentStatus.bootstrapping,
-                    phase="preflight",
-                    progress=5,
-                    error_code=None,
-                    error_message=None,
-                    started_at=now,
-                    finished_at=None,
-                    updated_at=now,
-                )
+            return conditional_acquire(
+                session,
+                model=OpenFuyaoEnvironmentORM,
+                record_id=environment_id,
+                allowed_statuses=allowed_statuses,
+                values={
+                    "status": EnvironmentStatus.bootstrapping,
+                    "phase": BootstrapPhase.preflight,
+                    "progress": 5,
+                    "error_code": None,
+                    "error_message": None,
+                    "started_at": now,
+                    "finished_at": None,
+                    "updated_at": now,
+                },
             )
-            session.commit()
-            return bool(result.rowcount)
 
     def recover_interrupted(self) -> int:
         """服务重启后把进行中的环境标记失败，避免前端永远转圈。"""
         now = utcnow()
         with self._session_factory() as session:
-            result = session.execute(
-                update(OpenFuyaoEnvironmentORM)
-                .where(OpenFuyaoEnvironmentORM.status.in_(ACTIVE_STATUSES))
-                .values(
-                    status=EnvironmentStatus.failed,
-                    error_code=ErrorCode.BOOTSTRAP_INTERRUPTED,
-                    error_message="服务重启导致 Bootstrap 中断，可重新部署",
-                    finished_at=now,
-                    updated_at=now,
-                )
+            return mark_interrupted(
+                session,
+                model=OpenFuyaoEnvironmentORM,
+                active_statuses=ACTIVE_STATUSES,
+                values={
+                    "status": EnvironmentStatus.failed,
+                    "error_code": ErrorCode.BOOTSTRAP_INTERRUPTED,
+                    "error_message": "服务重启导致 Bootstrap 中断，可重新部署",
+                    "finished_at": now,
+                    "updated_at": now,
+                },
             )
-            session.commit()
-            return int(result.rowcount or 0)
 
     @staticmethod
     def _to_record(row: OpenFuyaoEnvironmentORM) -> OpenFuyaoEnvironmentRecord:
