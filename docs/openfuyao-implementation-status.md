@@ -99,10 +99,9 @@ pnpm build       # pass
 ## 5. 仍需人工完成的验收
 
 1. 配置模型并实例化 `openfuyao-deployer`，在聊天里让 Agent 自行执行
-   `witty-service openfuyao deploy --confirm`（当前生产库 0 model / 0 agent）；
-2. 浏览器打开 `http://<host>:3000`，确认右侧 iframe 显示真实登录页、可登录、刷新不掉；
-3. 在控制台完成阶段 2（单节点业务集群）与阶段 3（应用市场 nginx）；
-4. 记录 26.09 的兼容性偏差与耗时，失败则按决策点回退 22.03。
+   `witty-service openfuyao deploy --confirm`（当前生产库 0 model，只有冒烟 Agent）；
+2. 在控制台完成阶段 2（单节点业务集群）与阶段 3（应用市场 nginx）；
+3. 记录 26.09 的兼容性偏差与耗时，失败则按决策点回退 22.03。
 
 ## 6. 26.09 实机验证（2026-10-20）
 
@@ -115,7 +114,7 @@ stat -fc %T /sys/fs/cgroup   -> tmpfs（混合模式）
 /sys/fs/cgroup/cpu/cpu.cfs_quota_us -> -1
 ```
 
-实跑结果（BKE `latest`，k8s v1.34.3-of.1）：
+实跑结果（BKE `latest`，k3s v1.25.16+k3s4）：
 
 - `bke preflight init` 仅 OS/内核矩阵失败，按 `OPENFUYAO_ALLOW_UNSUPPORTED_OS=true`
   继续；`bke init` 约 4 分钟完成，出现 `BKE initialization is complete`；
@@ -123,7 +122,9 @@ stat -fc %T /sys/fs/cgroup   -> tmpfs（混合模式）
 - 通过后端 API + CLI 走通完整链路：预检 → 安装 BKE → `bke init` → 等待控制台 →
   `status=ready / phase=done`，CLI 退出码 0；
 - 真实控制台经 Nginx `:3002` 访问：登录页 HTTP 200，标题 `openFuyao管理平台`；
-  `X-Frame-Options` 已剥离，CSP `frame-ancestors` 含前端源，Cookie 无 `Secure`。
+  `X-Frame-Options` 已剥离，CSP `frame-ancestors` 含前端源，Cookie 无 `Secure`；
+- 浏览器（Playwright，1680x1050）实测：选中冒烟 Agent → 展开工具面板 → `openFuyao`，
+  右侧 iframe 加载真实 `欢迎登录 openFuyao` 页面，环境显示“已就绪 / 已连接”。
 
 权限模型：后端以 `witty-service` 运行，Runner 对 `bke`、`kubectl` 和下载脚本使用
 `sudo -n`；部署机需有对应 sudoers：
