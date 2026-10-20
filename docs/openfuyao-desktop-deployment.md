@@ -50,14 +50,20 @@ install -m 755 packaging/polymind-desktop /usr/local/bin/polymind-desktop   # �
 
 root 启动时启动器自动加 `--no-sandbox`；tester 等普通用户不加（沙箱正常）。
 
-## 4. 控制台窗口
+## 4. 控制台内嵌
 
-右侧面板“打开控制台”不再走 iframe，而是由 Electron 主进程开独立窗口：
+桌面端右侧面板里用 `<webview>` 直接显示控制台，位置与 Web 端 iframe 一致：
 
-- URL 统一改写为 `https://127.0.0.1:<console_port>`（证书 CN 与 host 不匹配，直连 IP 也会失败）；
-- 只对 `<console_port>` + 已知 host 放行自签证书，其余仍走 Chromium 默认校验；
-- 只放行该窗口在控制台端口上的 https 跳转（登录/OAuth 回调），外链交系统浏览器；
-- 该窗口使用 `persist:polymind-console` 分区，登录态可保持。
+- 控制台地址统一改写为 `https://127.0.0.1:<console_port>`（证书 CN 与 host 不匹配，直连 IP 也会失败）；
+- 主进程 `will-attach-webview` 校验 src 只允许控制台端口，剥掉 preload/Node，固定
+  `persist:polymind-console` 分区；
+- 只对 `<console_port>` 放行自签证书，其余仍走 Chromium 默认校验；
+- 只放行该 guest 在控制台端口上的 https 跳转（登录/OAuth 回调），外链交系统浏览器；
+- 控制台按桌面宽度设计，面板更窄时组件会测量 guest 宽度并整体缩放，避免横向裁切。
+
+为什么不用 iframe：控制台 Cookie 是 `Secure; SameSite=Lax/Strict`，在 `app://polymind` 的跨站
+iframe 里不会随子请求发送；`app://` 又是安全上下文，嵌 `http://<host>:3002` 网关还会被混合
+内容拦掉。`<webview>` 是独立 guest（按顶层框架加载），SameSite Cookie 正常。
 
 Web 端（3000）仍保留 iframe + 3002 网关的兜底路径。
 
@@ -71,9 +77,9 @@ xvfb-run -a --server-args="-screen 0 1440x900x24" ./polymind-desktop --no-sandbo
 ```
 
 检查 `/tmp/desktop.json`：`pageErrors` 为空、`probe.origin=app://polymind`、`probe.hasDesktopBridge=true`。
-控制台链路可用 CDP 验证：`--remote-debugging-port=9223`，在页面里执行
-`window.polymindDesktop.openConsole('https://127.0.0.1:30010')`，应出现标题为
-“openFuyao管理平台”的新窗口。
+控制台链路可用 CDP 验证：`--remote-debugging-port=9223`，打开右侧 openFuyao tab 后，
+`/json` 里应出现一个 `type=webview`、URL 属于 `https://127.0.0.1:30010` 的目标，标题为
+“openFuyao管理平台”；面板内应直接显示登录页。
 
 ## 6. 常见问题
 
@@ -81,8 +87,8 @@ xvfb-run -a --server-args="-screen 0 1440x900x24" ./polymind-desktop --no-sandbo
 | --- | --- | --- |
 | 点击图标无反应 | root 下未加 `--no-sandbox` | 用启动器启动；确认桌面项 Exec 指向 `/usr/local/bin/polymind-desktop` |
 | 页面空白/接口 404 | 后端没起 | `systemctl status witty-backend`；启动器会尝试拉起 |
-| 控制台窗口 `ERR_CERT_AUTHORITY_INVALID` | 证书未放行 | 确认 URL 端口等于 `POLYMIND_DESKTOP_CONSOLE_PORT`；重启应用 |
-| 控制台登录后又跳登录 | Cookie 未保持 | 确认用的是独立窗口（不是 Web iframe）；清 `persist:polymind-console` 分区后重试 |
+| 控制台区域 `ERR_CERT_AUTHORITY_INVALID` | 证书未放行 | 确认 URL 端口等于 `POLYMIND_DESKTOP_CONSOLE_PORT`；重启应用 |
+| 控制台登录后又跳登录 | Cookie 未保持 | 确认控制台是面板内 `<webview>`；清 `persist:polymind-console` 分区后重试 |
 | 任务栏图标是默认空白 | `WM_CLASS` 与桌面项不匹配 | `desktop/package.json` 的 `name`、`StartupWMClass` 必须都是 `polymind-desktop` |
 | 改了前端没生效 | 未重建 renderer | 重跑 `npm run build:renderer` + 重新 packager |
 | 打包体积 299 MB | Electron 运行时本身约 220 MB | 正常；如需更小可在打包后删除 `resources/app/node_modules`（已无可运行依赖） |

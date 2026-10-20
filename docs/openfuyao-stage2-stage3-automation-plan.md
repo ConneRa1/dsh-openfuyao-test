@@ -17,13 +17,13 @@
 1. **验收主体是 PolyMind 里的 agent，不是操作员**。每个阶段的“完成”必须有：
    - agent 会话 ID + 完整 tool call 链；
    - 用户在桌面端 UI 里只发一句自然语言；
-   - 右侧面板状态正确、控制台窗口可打开；
+   - 右侧面板状态正确、控制台在面板内可直接登录；
    - 最终可访问的 URL。
 2. **agent 只做编排与确认，特权操作留在后端**。改 hostname、清 `/etc/kubernetes`、跑 `bke`、装 chart
    都由 `witty-service` 的 runner 以受控方式执行；agent 不直接拿 root shell。
 3. **能力缺口优先补在 agent 侧**：CLI 输出要可解析、错误码要可解释、破坏性操作要二次确认、
    失败要给出下一步命令。后端接口设计服从这些约束。
-4. **桌面端是唯一验收载体**：不要求 nginx/Next 运行；控制台用独立顶层窗口，不在 `app://` 页面里 iframe。
+4. **桌面端是唯一验收载体**：不要求 nginx/Next 运行；控制台用 `<webview>` 内嵌在右侧面板，不再另开窗口。
 
 ---
 
@@ -39,7 +39,7 @@
 | Skill | 6 个远端 skill（ssh/kubernetes/openfuyao-cluster-deploy/openfuyao-app-install/openfuyao-node-os-setup/experience） | 阶段 2/3 的 skill 存在，但只是“命令行说明”，没有后端能力 |
 | MCP | 模板未声明 | 工具面只有 bash；新增能力优先走 CLI，MCP 可选 |
 | Prompt | 仍写“业务集群与应用市场安装由用户在官方控制台手动完成” | **阶段 2/3 不能 agent 化的直接原因**，需与后端同批修改 |
-| 承载端 | PolyMind 桌面端（Electron，`app://polymind` 自包含） | 不依赖 nginx/Next；控制台独立窗口直连 30010 |
+| 承载端 | PolyMind 桌面端（Electron，`app://polymind` 自包含） | 不依赖 nginx/Next；控制台在面板内嵌、直连 30010 |
 | 已证实的 agent 能力 | 阶段 1 部署已由 agent 完成（环境 `ready/100%`） | CLI 链路可用，缺的是阶段 2/3 能力与 prompt 授权 |
 
 结论：**阶段 2/3 的瓶颈不是“agent 不会用”，而是“后端没有可调用的能力 + prompt 禁止”**。
@@ -71,7 +71,7 @@ witty-service CLI  ──HTTP──▶  witty-service API
                         日志 / progress / 错误码 ──▶ agent 汇报 + 桌面面板
                                    │
                                    ▼
-                        控制台：独立顶层窗口（https://127.0.0.1:30010）
+                        控制台：右侧面板内嵌 <webview>（https://127.0.0.1:30010）
 ```
 
 关键边界：
@@ -84,12 +84,13 @@ witty-service CLI  ──HTTP──▶  witty-service API
 
 - 形态：`app://polymind` 托管 `desktop/renderer/` 静态导出，主进程代理 `/api → 127.0.0.1:8000`；
   **不需要 nginx，也不需要 Next 服务端**，只要求 `witty-backend` 在 8000。
-- 控制台：桌面端**不用 iframe**。控制台 Cookie 是 `Secure; SameSite=Lax/Strict`，在 `app://polymind`
-  的跨站 iframe 中不会随子请求发送；`app://` 又是安全上下文，嵌 `http://` 网关还会触发混合内容限制。
-  因此由主进程开独立 `BrowserWindow` 直连 `https://127.0.0.1:30010`：
-  - 只对控制台端口（默认 30010）+ 已知 host 放行自签证书；
-  - 导航守卫只放行该窗口在控制台端口上的 https 跳转，外链仍交系统浏览器；
-  - 前端通过 preload 暴露的 `window.polymindDesktop.openConsole(url)` 调用，Web 端保留原 iframe 兜底。
+- 控制台：桌面端用 `<webview>` **内嵌在右侧面板**，视觉和 Web 端 iframe 一致，但不是跨站 iframe。
+  控制台 Cookie 是 `Secure; SameSite=Lax/Strict`，在 `app://polymind` 的跨站 iframe 里不会随子请求发送；
+  `<webview>` 是独立的 guest webContents（按顶层框架加载），SameSite Cookie 正常。
+  - 主进程 `will-attach-webview` 校验 src 只允许控制台端口，剥掉 preload/Node，固定 `persist:polymind-console` 分区；
+  - 只对控制台端口放行自签证书；guest 在控制台端口上的 https 跳转放行，外链仍交系统浏览器；
+  - 面板宽度小于控制台设计宽度时整体缩放，避免横向裁切；
+  - 不再需要 preload/IPC 开关，Web 端保留原 iframe 路径。
 - 启动：`/usr/local/bin/polymind-desktop` → `/opt/polymind-desktop-linux-arm64/polymind-desktop`；
   root 下自动追加 `--no-sandbox`（Electron 的硬限制）；桌面项 `StartupWMClass=polymind-desktop`。
 - 构建/重打包：
@@ -241,7 +242,7 @@ App:     pending → resolving → installing → verifying → deployed
 
 补充门槛：
 
-- 桌面端“打开控制台”必须打开独立窗口并能登录（`admin/test@1234`，首次强制改密），不依赖 nginx/3002 网关；
+- 桌面端控制台必须内嵌在右侧面板、能完成登录（凭据由用户提供，不要猜测默认密码），不依赖 nginx/3002 网关；
 - transcript 中不得出现 agent 直接 `bke cluster create`、`helm install`、`useradd`、`/etc/kubernetes` 操作；
 - 同一 prompt 重复发送不产生第二个集群/release；
 - 失败场景必须给出可执行下一步，而不是“请检查日志”。
@@ -271,12 +272,13 @@ App:     pending → resolving → installing → verifying → deployed
 4. 把 DB 遗留 environment 记录置为 `failed`，避免 agent 误判；阶段 1 已由 agent 跑通（`ready/100%`，控制台 303）；
 5. **桌面端落地**：
    - 撤回端口转发适配（`git revert e7f8e5d`），不再让 iframe 跟随页面 host；
-   - Electron 壳新增 `polymind:open-console`：独立窗口直连 `https://127.0.0.1:30010`，只对控制台端口放行自签证书；
-   - 前端桌面端检测 + “打开控制台”走 bridge，Web 端保留 iframe；
+   - Electron 壳改用 `<webview>` 内嵌控制台：主进程校验 src、剥 preload/Node、固定 `persist:polymind-console` 分区；
+   - 只对控制台端口放行自签证书；面板内自适应缩放；Web 端保留 iframe；
+   - 修复此前“点打开控制台没反应”：按钮把 3002 网关地址传给了只接受 30010 的 IPC，现改为面板内嵌；
    - `npm run build:renderer` + `@electron/packager` 打包到 `/opt/polymind-desktop-linux-arm64`，
      启动器 `/usr/local/bin/polymind-desktop`、桌面项 `/usr/share/applications/polymind.desktop`；
-   - 已验证：`app://polymind` 安全上下文、`/api/agents` 200、页面零错误；控制台窗口标题
-     `openFuyao管理平台`、登录页正常渲染（自签证书被定向放行）；
+   - 已验证：`app://polymind` 安全上下文、`/api/agents` 200、页面零错误；控制台在右侧面板内
+     渲染登录页（自签证书被定向放行，无横向裁切）；
 6. 当前 Web 栈（nginx 3000/3002 + Next 3001）仍可作兜底，但桌面端不依赖它。
 
 ---
