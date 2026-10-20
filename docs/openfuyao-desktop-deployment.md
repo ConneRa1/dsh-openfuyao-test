@@ -86,6 +86,7 @@ xvfb-run -a --server-args="-screen 0 1440x900x24" ./polymind-desktop --no-sandbo
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | 点击图标无反应 | root 下未加 `--no-sandbox` | 用启动器启动；确认桌面项 Exec 指向 `/usr/local/bin/polymind-desktop` |
+| 启动后没有窗口，命令行提示“已有实例在运行” | Wayland 下 `show:false` 的窗口可能永远不触发 `ready-to-show`；单实例置前也可能被合成器忽略 | 当前版本有 800ms 兜底显示 + 第二实例 `show/moveTop/focus`；若仍旧，先完全退出旧进程（`pkill -u "$USER" polymind-desktop`）再重开 |
 | 页面空白/接口 404 | 后端没起 | `systemctl status witty-backend`；启动器会尝试拉起 |
 | 控制台区域 `ERR_CERT_AUTHORITY_INVALID` | 证书未放行 | 确认 URL 端口等于 `POLYMIND_DESKTOP_CONSOLE_PORT`；重启应用 |
 | 控制台登录后又跳登录 | Cookie 未保持 | 确认控制台是面板内 `<webview>`；清 `persist:polymind-console` 分区后重试 |
