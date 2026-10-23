@@ -100,6 +100,15 @@ def _host_claimed(host: str) -> DomainError:
     )
 
 
+def _preflight_not_applicable(status: str) -> DomainError:
+    return DomainError(
+        code=ErrorCode.PREFLIGHT_NOT_APPLICABLE,
+        message="该环境正在部署或已就绪，不能重新预检",
+        status_code=409,
+        details={"status": status},
+    )
+
+
 class EnvironmentService:
     def __init__(
         self,
@@ -158,25 +167,10 @@ class EnvironmentService:
         if existing is not None:
             if existing.agent_id != agent_id:
                 raise _host_claimed(host)
-            if not dry_run and existing.status in (
-                EnvironmentStatus.failed,
-                EnvironmentStatus.cancelled,
-            ):
-                existing = self._repository.update(
-                    existing.id,
-                    status=(
-                        EnvironmentStatus.preflight
-                        if report.ready
-                        else EnvironmentStatus.failed
-                    ),
-                    phase=BootstrapPhase.preflight,
-                    progress=5 if report.ready else 0,
-                    preflight_json=report.to_dict(),
-                    os_version=_os_version(report),
-                    error_code=None if report.ready else ErrorCode.PREFLIGHT_FAILED,
-                    error_message=None if report.ready else _preflight_message(report),
-                    finished_at=None if report.ready else _now(),
-                )
+            # 还没有开始部署的环境，重新点“预检”就该看到最新结果，
+            # 不能拿上次落库的报告糊弄（2026-10-23：修完宿主环境后列表没变，就是这里）。
+            if not dry_run and existing.status in BOOTSTRAP_ALLOWED_FROM:
+                existing = self._apply_preflight(existing, report) or existing
             return CreateResult(
                 environment=existing,
                 preflight=report,
@@ -231,6 +225,51 @@ class EnvironmentService:
             if existing is None:
                 raise
             return existing
+
+    # ------------------------------------------------------------------
+    # 预检（可重复执行，不影响部署状态机）
+    # ------------------------------------------------------------------
+
+    async def recheck_preflight(
+        self, environment_id: str, *, agent_id: str | None = None
+    ) -> OpenFuyaoEnvironmentRecord:
+        """只重跑环境预检并刷新报告，绝不触发 Bootstrap。
+
+        面板上的“重新预检”走这里：用户改完宿主机环境想再确认一次，
+        却不准备现在就部署。校验结果与首次预检完全一致（同一套 Gate）。
+        """
+        record = self.get_environment(environment_id, agent_id=agent_id)
+        if record.status not in BOOTSTRAP_ALLOWED_FROM:
+            raise _preflight_not_applicable(record.status)
+
+        report = await asyncio.to_thread(self._preflight_runner)
+        # 预检要跑几秒，期间用户可能已经点了部署：此时不能把状态改回去。
+        current = self._repository.get(environment_id)
+        if current is None:
+            raise _not_found(environment_id)
+        if current.status not in BOOTSTRAP_ALLOWED_FROM:
+            raise _preflight_not_applicable(current.status)
+        updated = self._apply_preflight(current, report)
+        if updated is None:
+            raise _not_found(environment_id)
+        return updated
+
+    def _apply_preflight(
+        self, record: OpenFuyaoEnvironmentRecord, report: PreflightReport
+    ) -> OpenFuyaoEnvironmentRecord | None:
+        """把一次预检结果落到记录上：通过→待部署，不通过→失败并带错误码。"""
+        ready = report.ready
+        return self._repository.update(
+            record.id,
+            status=EnvironmentStatus.preflight if ready else EnvironmentStatus.failed,
+            phase=BootstrapPhase.preflight,
+            progress=5 if ready else 0,
+            preflight_json=report.to_dict(),
+            os_version=_os_version(report),
+            error_code=None if ready else ErrorCode.PREFLIGHT_FAILED,
+            error_message=None if ready else _preflight_message(report),
+            finished_at=None if ready else _now(),
+        )
 
     # ------------------------------------------------------------------
     # Bootstrap

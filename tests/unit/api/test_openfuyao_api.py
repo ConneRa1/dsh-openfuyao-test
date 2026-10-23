@@ -231,7 +231,56 @@ def test_unknown_environment_returns_404(tmp_path, monkeypatch) -> None:
     assert response.json()["error"]["code"] == "ENVIRONMENT_NOT_FOUND"
 
 
-def test_create_cluster_api_is_disabled_for_console_first_flow(tmp_path, monkeypatch) -> None:
+def test_recheck_preflight_refreshes_report(tmp_path, monkeypatch) -> None:
+    client, services = _build(tmp_path, monkeypatch)
+    service = services.get_openfuyao_service()
+    service._preflight_runner = lambda: _report(ready=False)
+
+    created = client.post(
+        "/openfuyao/environments",
+        json={"agent_id": _agent_id(services)},
+        headers=AUTH,
+    ).json()
+    environment_id = created["environment"]["id"]
+    assert created["environment"]["status"] == "failed"
+
+    service._preflight_runner = lambda: _report(ready=True)
+    response = client.post(
+        f"/openfuyao/environments/{environment_id}/preflight", headers=AUTH
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "preflight"
+    assert body["error_code"] is None
+    assert body["error_message"] is None
+    assert body["preflight"]["ready"] is True
+    assert body["preflight"]["summary"]["pass"] == 1
+
+
+def test_recheck_preflight_rejected_while_deploying(tmp_path, monkeypatch) -> None:
+    client, services = _build(tmp_path, monkeypatch)
+    created = client.post(
+        "/openfuyao/environments",
+        json={"agent_id": _agent_id(services)},
+        headers=AUTH,
+    ).json()
+    environment_id = created["environment"]["id"]
+    services.get_openfuyao_service()._repository.update(
+        environment_id, status="bootstrapping"
+    )
+
+    response = client.post(
+        f"/openfuyao/environments/{environment_id}/preflight", headers=AUTH
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "PREFLIGHT_NOT_APPLICABLE"
+
+
+def test_create_cluster_api_is_disabled_for_console_first_flow(
+    tmp_path, monkeypatch
+) -> None:
     client, services = _build(tmp_path, monkeypatch)
 
     response = client.post(

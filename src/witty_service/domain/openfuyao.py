@@ -152,6 +152,8 @@ class ErrorCode(StrEnum):
     BOOTSTRAP_IN_PROGRESS = "BOOTSTRAP_IN_PROGRESS"
     ENVIRONMENT_NOT_CANCELLABLE = "ENVIRONMENT_NOT_CANCELLABLE"
     PREFLIGHT_FAILED = "PREFLIGHT_FAILED"
+    #: 只有“还没开始部署”的环境能重跑预检；部署中/已就绪重跑会污染状态机
+    PREFLIGHT_NOT_APPLICABLE = "PREFLIGHT_NOT_APPLICABLE"
 
     # ------------------------------------------------------------------
     # Bootstrap 执行（落库成 environment.error_code）

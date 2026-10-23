@@ -157,6 +157,96 @@ async def test_create_with_failed_preflight_persists_failure(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_recheck_preflight_refreshes_stale_report(tmp_path) -> None:
+    """“重新预检”要拿到新报告：状态从 failed 回到待部署，且不启动 Bootstrap。"""
+    harness = _Harness(tmp_path, ready=False)
+    try:
+        created = await harness.service.create_environment(agent_id="agent-1")
+        assert created.environment is not None
+        assert created.environment.status == "failed"
+        assert created.environment.preflight_json is not None
+        assert created.environment.preflight_json["summary"]["fail"] == 1
+
+        harness.report = _report(ready=True)
+        refreshed = await harness.service.recheck_preflight(created.environment.id)
+
+        assert refreshed.status == "preflight"
+        assert refreshed.progress == 5
+        assert refreshed.error_code is None
+        assert refreshed.error_message is None
+        assert refreshed.preflight_json is not None
+        assert refreshed.preflight_json["summary"] == {
+            "total": 1,
+            "pass": 1,
+            "warn": 0,
+            "fail": 0,
+        }
+        # 一次预检不能顺手把部署也起起来
+        assert harness.runners == []
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_recheck_preflight_reports_new_failure(tmp_path) -> None:
+    harness = _Harness(tmp_path)
+    try:
+        created = await harness.service.create_environment(agent_id="agent-1")
+        assert created.environment is not None
+        assert created.environment.status == "preflight"
+
+        harness.report = _report(ready=False)
+        refreshed = await harness.service.recheck_preflight(created.environment.id)
+
+        assert refreshed.status == "failed"
+        assert refreshed.progress == 0
+        assert refreshed.error_code == "PREFLIGHT_FAILED"
+        assert refreshed.preflight_json is not None
+        assert refreshed.preflight_json["summary"]["fail"] == 1
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_create_refreshes_preflight_for_existing_environment(tmp_path) -> None:
+    """同一个环境再点一次“预检”（create 幂等路径）也要落最新报告。"""
+    harness = _Harness(tmp_path, ready=False)
+    try:
+        created = await harness.service.create_environment(agent_id="agent-1")
+        assert created.environment is not None
+
+        harness.report = _report(ready=True)
+        again = await harness.service.create_environment(agent_id="agent-1")
+
+        assert again.created is False
+        assert again.environment is not None
+        assert again.environment.id == created.environment.id
+        assert again.environment.status == "preflight"
+        assert again.environment.error_code is None
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_recheck_preflight_rejected_once_ready(tmp_path) -> None:
+    harness = _Harness(tmp_path)
+    try:
+        created = await harness.service.create_environment(agent_id="agent-1")
+        assert created.environment is not None
+        await harness.service.bootstrap(created.environment.id, confirm=True)
+        task = harness.service._tasks[created.environment.id]
+        harness.runners[0].block.set()
+        await asyncio.wait_for(task, timeout=2)
+
+        with pytest.raises(DomainError) as exc_info:
+            await harness.service.recheck_preflight(created.environment.id)
+        assert exc_info.value.code == "PREFLIGHT_NOT_APPLICABLE"
+        assert exc_info.value.status_code == 409
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_requires_confirm(tmp_path) -> None:
     harness = _Harness(tmp_path)
     try:

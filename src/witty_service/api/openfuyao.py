@@ -119,6 +119,27 @@ async def cancel_environment(
     return EnvironmentResponse.from_record(record)
 
 
+@router.post(
+    "/environments/{environment_id}/preflight",
+    response_model=EnvironmentResponse,
+)
+async def recheck_environment_preflight(
+    environment_id: str,
+    agent_id: str | None = Query(default=None),
+    services: ServiceContainer = Depends(get_services),
+) -> EnvironmentResponse:
+    """只重跑环境预检并刷新报告，不触发 Bootstrap。
+
+    面板“重新预检”用：用户改完宿主机环境后想再确认一次，但暂时不部署。
+    预检不通过时仍返回 200 + 更新后的报告（status=failed），
+    让面板把哪一项没过直接摆出来，而不是弹一个错误再让人自己找。
+    """
+    record = await services.get_openfuyao_service().recheck_preflight(
+        environment_id, agent_id=agent_id
+    )
+    return EnvironmentResponse.from_record(record)
+
+
 @router.get(
     "/environments/{environment_id}/logs",
     response_model=EnvironmentLogsResponse,
