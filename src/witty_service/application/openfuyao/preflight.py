@@ -273,24 +273,45 @@ def _ntp_synced() -> bool | None:
     return None
 
 
-def _has_privilege() -> bool:
-    """root 直接通过；否则要求 witty-service 能免密以 root 执行 bke。"""
-    if os.geteuid() == 0:
-        return True
+def _sudo_run(argv: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """执行一次 ``sudo -n`` 探测；没有 sudo 或超时返回 None。"""
     executable = shutil.which("sudo")
     if executable is None:
-        return False
+        return None
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C"}
     try:
-        result = subprocess.run(
-            [executable, "-n", "-l", "bke"],
+        return subprocess.run(
+            [executable, *argv],
             capture_output=True,
             text=True,
             timeout=3,
             check=False,
+            env=env,
         )
     except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _has_privilege() -> bool:
+    """root 直接通过；否则要求 witty-service 能免密以 root 执行 bke。
+
+    不能只探测 ``sudo -n -l bke``：预检发生在 bke 安装**之前**，此时 sudo 会以
+    "command not found" 退出，即使 sudoers 白名单已经就位，形成鸡生蛋问题。
+    因此命令已安装时按命令判定，未安装时退化为"白名单里是否已放行 bke"。
+    """
+    if os.geteuid() == 0:
+        return True
+
+    bke = shutil.which("bke") or shutil.which("/usr/local/bin/bke")
+    if bke is not None:
+        result = _sudo_run(["-n", "-l", bke])
+        if result is not None and result.returncode == 0:
+            return True
+
+    listing = _sudo_run(["-n", "-l"])
+    if listing is None or listing.returncode != 0:
         return False
-    return result.returncode == 0
+    return "bke" in f"{listing.stdout}{listing.stderr}"
 
 
 def collect_host_facts() -> HostFacts:
