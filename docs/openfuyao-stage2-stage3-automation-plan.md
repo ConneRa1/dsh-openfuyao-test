@@ -1,5 +1,11 @@
 # openFuyao 阶段 2/3 自动化实施方案（Agent-first · 桌面端承载）
 
+> **2026-10-21 交互调整**：阶段 2 已改为“只允许在引导节点控制台手动创建”，
+> 阶段 3 支持控制台手动与自然语言双通道；Agent 负责感知/诊断/应用回滚。
+> 本文关于 `cluster create` 自动建集群的段落仅保留为历史实现记录，
+> 新行为见 [openfuyao-console-first-interaction.md](openfuyao-console-first-interaction.md)。
+
+
 > 修订说明：
 > 1. 上一版从“后端能力”出发、以 Shell 跑通为验收，偏离“用 agent 自动化部署”的需求；本版以
 >    **PolyMind 中 `openfuyao-deployer` agent 的实际产品能力**为核心。

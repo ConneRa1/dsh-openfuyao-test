@@ -1,7 +1,10 @@
 """openFuyao 运维 CLI（``witty-service openfuyao ...``）。
 
 - ``preflight``：只读宿主机门禁，不依赖后端；
-- ``deploy/status/cancel/logs``：通过本机 REST API 驱动编排，Agent 不需要拼 ``bke``。
+- ``observe``：感知控制台侧手工创建的集群/应用并返回诊断（Agent 回答状态问题前必跑）；
+- ``deploy/status/cancel/logs``：通过本机 REST API 驱动编排，Agent 不需要拼 ``bke``；
+- ``cluster list/status/logs``：只读感知；``cluster create`` 已停用，业务集群走控制台；
+- ``app preflight/install/rollback/uninstall``：应用预检、安装、回滚、卸载。
 
 Agent 侧约定：``WITTY_AGENT_ID`` 由沙箱注入，``AUTH_TOKEN`` 从服务进程环境继承；
 两个变量都缺失时用显式参数覆盖。
@@ -502,6 +505,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    observe = subparsers.add_parser(
+        "observe", help="感知控制台侧集群/应用并给出诊断"
+    )
+    _add_api_options(observe)
+    observe.set_defaults(handler=_cmd_observe)
+
     preflight = subparsers.add_parser(
         "preflight",
         help="只读门禁：bootstrap=干净宿主，node=加入业务集群",
@@ -564,8 +573,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(_exit_for_error(exc.code))
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+
+# ==============================================================================
+# 感知：控制台侧集群/应用 + 诊断
+# ==============================================================================
+
+
+def _cmd_observe(args: argparse.Namespace) -> int:
+    """读取统一快照；这是 Agent 回答“现在有什么/哪里坏了”的唯一事实来源。"""
+    client = _client(args)
+    try:
+        overview = client.request(
+            "GET", "/openfuyao/overview", params={"agent_id": _agent_id(args)}
+        )
+        if args.json:
+            print(json.dumps(overview, ensure_ascii=False, indent=2))
+            return int(ExitCode.OK)
+        clusters = overview.get("clusters") or []
+        apps = overview.get("apps") or []
+        issues = overview.get("issues") or []
+        print(f"openFuyao 感知：{len(clusters)} 个集群，{len(apps)} 个应用，{len(issues)} 条诊断")
+        print("-" * 72)
+        for cluster in clusters:
+            print(
+                f"[集群] {cluster['name']:<24} {cluster['status']:<14} "
+                f"{cluster.get('endpoint') or ''}"
+            )
+        for app in apps:
+            print(
+                f"[应用] {app['release_name']:<24} ns={app['namespace']:<16} "
+                f"{app['status']:<10} {app.get('verify_url') or ''}"
+            )
+        for issue in issues:
+            print(
+                f"[{issue['severity'].upper():5}] {issue['code']:<28} "
+                f"{issue['title']}：{issue['message'][:160]}"
+            )
+            if issue.get("remediation"):
+                print(f"        建议：{issue['remediation']}")
+        for error in overview.get("errors") or []:
+            print(f"[感知降级] {error}")
+        return int(ExitCode.OK)
+    finally:
+        client.close()
 
 
 # ==============================================================================
@@ -816,6 +866,16 @@ def _cmd_cluster_create(args: argparse.Namespace) -> int:
         )
     finally:
         client.close()
+
+
+def _cmd_cluster_create_disabled(args: argparse.Namespace) -> int:
+    del args
+    print(
+        "阶段 2 已改为在引导节点控制台手动创建业务集群；PolyMind 只负责感知、"
+        "诊断和应用安装。请打开面板“引导节点控制台”Tab 创建集群。",
+        file=sys.stderr,
+    )
+    return int(ExitCode.ERROR)
 
 
 def _cmd_cluster_preflight(args: argparse.Namespace) -> int:
@@ -1153,26 +1213,119 @@ def _cmd_app_list(args: argparse.Namespace) -> int:
         client.close()
 
 
+def _app_ref(client: _Client, args: argparse.Namespace) -> dict[str, Any]:
+    if getattr(args, "app_id", None):
+        return client.request("GET", f"/openfuyao/apps/{args.app_id}")
+    params: dict[str, Any] = {"agent_id": _agent_id(args)}
+    apps = client.request("GET", "/openfuyao/apps", params=params)
+    if getattr(args, "cluster", None):
+        clusters = client.request(
+            "GET", "/openfuyao/clusters", params={"agent_id": _agent_id(args)}
+        )
+        match = [item for item in clusters if item["name"] == args.cluster]
+        if not match:
+            raise _ApiError(404, ErrorCode.CLUSTER_NOT_FOUND, f"集群 {args.cluster} 不存在")
+        apps = [item for item in apps if item["cluster_id"] == match[0]["id"]]
+    if getattr(args, "release", None):
+        apps = [item for item in apps if item["release_name"] == args.release]
+    if not apps:
+        raise _ApiError(404, ErrorCode.APP_NOT_FOUND, "没有匹配的应用记录")
+    return apps[0]
+
+
+def _cmd_app_preflight(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        result = client.request(
+            "POST",
+            "/openfuyao/apps/preflight",
+            json={
+                "agent_id": _agent_id(args),
+                "cluster": args.cluster,
+                "release_name": args.release,
+                "namespace": args.namespace,
+                "chart_dir": args.chart_dir,
+                "repo_url": args.repo_url,
+                "chart": args.chart,
+                "chart_version": args.chart_version,
+                "image": args.image,
+                "node_port": args.node_port,
+            },
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"应用预检：{result['summary']}")
+            for item in result["checks"]:
+                print(
+                    f"  [{item['status'].upper():4}] {item['title']:<16} "
+                    f"{item['message'][:120]}"
+                )
+                if item.get("remediation"):
+                    print(f"         建议：{item['remediation']}")
+        return int(ExitCode.OK if result["ready"] else ExitCode.PREFLIGHT_FAILED)
+    finally:
+        client.close()
+
+
+def _cmd_app_rollback(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        app = _app_ref(client, args)
+        if not args.confirm:
+            print(
+                f"将把 {app['namespace']}/{app['release_name']} 回滚到 "
+                f"{'上一版本' if args.revision is None else f'revision {args.revision}'}；"
+                "加 --confirm 才会执行。",
+                file=sys.stderr,
+            )
+            return int(ExitCode.CONFIRM_REQUIRED)
+        params: dict[str, Any] = {"confirm": True}
+        if args.revision is not None:
+            params["revision"] = args.revision
+        updated = client.request(
+            "POST", f"/openfuyao/apps/{app['id']}/rollback", params=params
+        )
+        if args.json:
+            print(json.dumps(updated, ensure_ascii=False, indent=2))
+        else:
+            _print_app(updated)
+        return int(ExitCode.OK)
+    finally:
+        client.close()
+
+
+def _cmd_app_uninstall(args: argparse.Namespace) -> int:
+    client = _client(args)
+    try:
+        app = _app_ref(client, args)
+        if not args.confirm:
+            print(
+                f"将卸载 {app['namespace']}/{app['release_name']}；加 --confirm 才会执行。",
+                file=sys.stderr,
+            )
+            return int(ExitCode.CONFIRM_REQUIRED)
+        result = client.request(
+            "DELETE", f"/openfuyao/apps/{app['id']}", params={"confirm": True}
+        )
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"应用 {app['release_name']} 已卸载。")
+        return int(ExitCode.OK)
+    finally:
+        client.close()
+
+
 def _add_cluster_parsers(subparsers: Any) -> None:
     cluster = subparsers.add_parser("cluster", help="阶段 2：业务集群")
     cluster_sub = cluster.add_subparsers(dest="cluster_command", required=True)
 
-    create = cluster_sub.add_parser("create", help="创建业务集群（本地 master + N 节点）")
-    _add_api_options(create)
-    create.add_argument("--name", required=True, help="集群名（同时作为 namespace）")
-    create.add_argument(
-        "--node",
-        action="append",
-        default=[],
-        help="节点：ip=...,hostname=...,role=master|worker（可重复）",
+    create = cluster_sub.add_parser(
+        "create", help="已停用：业务集群改为在引导节点控制台手动创建"
     )
-    create.add_argument("--nodes-file", default=None, help="节点 JSON 数组文件")
-    create.add_argument("--confirm", action="store_true", help="确认执行 bke")
-    create.add_argument("--dry-run", action="store_true", help="只做本地校验")
-    create.add_argument("--wait", action="store_true")
-    create.add_argument("--timeout", type=float, default=2400.0)
-    create.add_argument("--interval", type=float, default=5.0)
-    create.set_defaults(handler=_cmd_cluster_create)
+    _add_api_options(create)
+    create.set_defaults(handler=_cmd_cluster_create_disabled)
 
     preflight = cluster_sub.add_parser("preflight", help="同步跑节点预检")
     _add_api_options(preflight)
@@ -1234,6 +1387,36 @@ def _add_app_parsers(subparsers: Any) -> None:
     install.add_argument("--interval", type=float, default=5.0)
     install.set_defaults(handler=_cmd_app_install)
 
+    app_preflight = app_sub.add_parser("preflight", help="安装前预检（集群/chart/端口）")
+    _add_api_options(app_preflight)
+    app_preflight.add_argument("--cluster", required=True)
+    app_preflight.add_argument("--release", required=True)
+    app_preflight.add_argument("--namespace", default="default")
+    app_preflight.add_argument("--chart-dir", default=None)
+    app_preflight.add_argument("--repo-url", default=None)
+    app_preflight.add_argument("--chart", default=None)
+    app_preflight.add_argument("--chart-version", default=None)
+    app_preflight.add_argument("--image", default=None)
+    app_preflight.add_argument("--node-port", type=int, default=None)
+    app_preflight.set_defaults(handler=_cmd_app_preflight)
+
+    rollback = app_sub.add_parser("rollback", help="回滚到上一 revision 或指定 revision")
+    _add_api_options(rollback)
+    rollback.add_argument("--app-id", default=None)
+    rollback.add_argument("--cluster", default=None)
+    rollback.add_argument("--release", default=None)
+    rollback.add_argument("--revision", type=int, default=None)
+    rollback.add_argument("--confirm", action="store_true")
+    rollback.set_defaults(handler=_cmd_app_rollback)
+
+    uninstall = app_sub.add_parser("uninstall", help="卸载 Helm release")
+    _add_api_options(uninstall)
+    uninstall.add_argument("--app-id", default=None)
+    uninstall.add_argument("--cluster", default=None)
+    uninstall.add_argument("--release", default=None)
+    uninstall.add_argument("--confirm", action="store_true")
+    uninstall.set_defaults(handler=_cmd_app_uninstall)
+
     status = app_sub.add_parser("status", help="查看应用状态")
     _add_api_options(status)
     status.add_argument("--app-id", default=None)
@@ -1246,3 +1429,7 @@ def _add_app_parsers(subparsers: Any) -> None:
     list_cmd = app_sub.add_parser("list", help="列出应用")
     _add_api_options(list_cmd)
     list_cmd.set_defaults(handler=_cmd_app_list)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

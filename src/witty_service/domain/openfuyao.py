@@ -191,6 +191,7 @@ class ErrorCode(StrEnum):
     # 阶段 2：集群/节点（§11.5；只增不改）
     # ------------------------------------------------------------------
     CLUSTER_NOT_FOUND = "CLUSTER_NOT_FOUND"
+    CLUSTER_CREATE_DISABLED = "CLUSTER_CREATE_DISABLED"
     CLUSTER_IN_PROGRESS = "CLUSTER_IN_PROGRESS"
     CLUSTER_NOT_CANCELLABLE = "CLUSTER_NOT_CANCELLABLE"
     CLUSTER_CREATE_FAILED = "CLUSTER_CREATE_FAILED"
@@ -212,6 +213,9 @@ class ErrorCode(StrEnum):
     APP_INTERRUPTED = "APP_INTERRUPTED"
     APP_INSTALL_FAILED = "APP_INSTALL_FAILED"
     APP_CANCELLED = "APP_CANCELLED"
+    APP_ROLLBACK_FAILED = "APP_ROLLBACK_FAILED"
+    APP_UNINSTALL_FAILED = "APP_UNINSTALL_FAILED"
+    APP_PREFLIGHT_FAILED = "APP_PREFLIGHT_FAILED"
 
     # ------------------------------------------------------------------
     # CLI 自身（不发 HTTP、不落库）

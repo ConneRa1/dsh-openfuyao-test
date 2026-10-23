@@ -26,11 +26,14 @@ from witty_service.application.openfuyao.app_runner import (
     AppResult,
     AppRunner,
 )
+from witty_service.application.openfuyao.helm import HelmClient, HelmError
+from witty_service.application.openfuyao.kube import KubeClient
 from witty_service.application.openfuyao.log_tail import (
     DEFAULT_CHUNK_BYTES,
     LogPage,
     read_log_page,
 )
+from witty_service.application.openfuyao.process import CommandRunner
 from witty_service.config import OpenFuyaoSettings
 from witty_service.domain.errors import DomainError
 from witty_service.domain.openfuyao import AppStatus, ClusterStatus, ErrorCode
@@ -66,6 +69,38 @@ class CreateAppResult:
     app: AppRecord | None
     created: bool
     needs_confirm: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AppPreflightCheck:
+    code: str
+    status: str
+    title: str
+    message: str
+    remediation: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "status": self.status,
+            "title": self.title,
+            "message": self.message,
+            "remediation": self.remediation,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AppPreflightResult:
+    ready: bool
+    summary: str
+    checks: tuple[AppPreflightCheck, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ready": self.ready,
+            "summary": self.summary,
+            "checks": [item.to_dict() for item in self.checks],
+        }
 
 
 class AppService:
@@ -122,6 +157,150 @@ class AppService:
         return read_log_page(
             self.log_path(app_id), cursor=cursor, limit_bytes=limit_bytes
         )
+
+    # ------------------------------------------------------------------
+    # 预检
+    # ------------------------------------------------------------------
+
+    async def preflight(
+        self,
+        *,
+        agent_id: str,
+        cluster_name: str,
+        release_name: str,
+        namespace: str,
+        chart_dir: str | None,
+        repo_url: str | None,
+        chart: str | None,
+        chart_version: str | None,
+        image: str | None,
+        node_port: int | None,
+    ) -> AppPreflightResult:
+        """安装前门禁：集群、kubeconfig、chart 来源、release 冲突、NodePort 占用。"""
+        checks: list[AppPreflightCheck] = []
+        try:
+            cluster = self._ready_cluster(agent_id, cluster_name)
+        except DomainError as exc:
+            checks.append(
+                AppPreflightCheck(
+                    code=str(exc.code),
+                    status="fail",
+                    title="业务集群",
+                    message=exc.message,
+                    remediation="先在引导节点控制台创建并等待业务集群 Ready。",
+                )
+            )
+            return _preflight_result(checks)
+        checks.append(
+            AppPreflightCheck(
+                code="APP-CLUSTER-READY",
+                status="pass",
+                title="业务集群",
+                message=f"{cluster.name} 已就绪",
+            )
+        )
+        if not cluster.kubeconfig_path or not Path(cluster.kubeconfig_path).is_file():
+            checks.append(
+                AppPreflightCheck(
+                    code="APP-KUBECONFIG",
+                    status="fail",
+                    title="业务集群 kubeconfig",
+                    message=f"kubeconfig 不存在：{cluster.kubeconfig_path or '-'}",
+                    remediation="在控制台重新下载 kubeconfig，或等待集群就绪后重试。",
+                )
+            )
+        else:
+            checks.append(
+                AppPreflightCheck(
+                    code="APP-KUBECONFIG",
+                    status="pass",
+                    title="业务集群 kubeconfig",
+                    message=str(cluster.kubeconfig_path),
+                )
+            )
+        try:
+            spec = _build_spec(
+                release_name=release_name,
+                namespace=namespace,
+                chart_dir=chart_dir,
+                repo_url=repo_url,
+                chart=chart,
+                chart_version=chart_version,
+                values=None,
+                image=image,
+                node_port=node_port,
+                verify_url=None,
+            )
+        except DomainError as exc:
+            checks.append(
+                AppPreflightCheck(
+                    code=str(exc.code),
+                    status="fail",
+                    title="Chart 来源",
+                    message=exc.message,
+                    remediation="提供本机存在的 --chart-dir，或 --chart + --repo-url。",
+                )
+            )
+            return _preflight_result(checks)
+        checks.append(
+            AppPreflightCheck(
+                code="APP-CHART",
+                status="pass",
+                title="Chart 来源",
+                message=spec.chart,
+            )
+        )
+        existing = self._repository.get_app_by_release(
+            cluster.id, namespace, release_name
+        )
+        if existing is not None:
+            status = "warn" if existing.status == AppStatus.deployed else "fail"
+            checks.append(
+                AppPreflightCheck(
+                    code="APP-RELEASE-EXISTS",
+                    status=status,
+                    title="Release 已存在",
+                    message=f"{namespace}/{release_name} 当前为 {existing.status}",
+                    remediation=(
+                        "已 deployed 时 install 会幂等返回，不做升级；需要变更请先回滚/卸载。"
+                    ),
+                )
+            )
+        if node_port is not None and cluster.kubeconfig_path:
+            conflict = await self._node_port_conflict(
+                cluster.kubeconfig_path, node_port, exclude=(namespace, release_name)
+            )
+            checks.append(
+                AppPreflightCheck(
+                    code="APP-NODEPORT",
+                    status="fail" if conflict else "pass",
+                    title="NodePort",
+                    message=conflict or f"{node_port} 可用",
+                    remediation="换一个 30000-32767 的端口，或先释放占用它的 Service。"
+                    if conflict
+                    else "",
+                )
+            )
+        return _preflight_result(checks)
+
+    async def _node_port_conflict(
+        self, kubeconfig: str, node_port: int, *, exclude: tuple[str, str]
+    ) -> str | None:
+        commands = CommandRunner(cwd=self._work_dir, log=lambda _line: None)
+        client = KubeClient(commands, kubeconfig)
+        payload = await client.get_json(["get", "svc", "-A", "-o", "json"])
+        for item in (payload or {}).get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            metadata = item.get("metadata") or {}
+            namespace = str(metadata.get("namespace") or "")
+            name = str(metadata.get("name") or "")
+            if (namespace, name) == exclude:
+                continue
+            for port in (item.get("spec") or {}).get("ports") or []:
+                if isinstance(port, dict) and port.get("nodePort") == node_port:
+                    return f"已被 {namespace}/{name} 占用"
+        return None
 
     # ------------------------------------------------------------------
     # 安装
@@ -313,6 +492,102 @@ class AppService:
             finished_at=_now(),
         ) or self.get_app(app_id)
 
+    async def rollback(
+        self, app_id: str, *, revision: int | None, confirm: bool
+    ) -> AppRecord:
+        if not confirm:
+            raise DomainError(
+                code=ErrorCode.CONFIRM_REQUIRED,
+                message="回滚会改变运行中的应用，需要 confirm=true",
+                status_code=400,
+            )
+        app = self.get_app(app_id)
+        cluster = self._repository.get_cluster(app.cluster_id)
+        if cluster is None or not cluster.kubeconfig_path:
+            raise DomainError(
+                code=ErrorCode.CLUSTER_NOT_READY,
+                message="应用所属集群缺少 kubeconfig，无法回滚",
+                status_code=409,
+            )
+        helm = self._helm(cluster.kubeconfig_path, app.id)
+        try:
+            history = await helm.history(app.release_name, app.namespace)
+        except HelmError as exc:
+            raise DomainError(
+                code=ErrorCode.APP_ROLLBACK_FAILED,
+                message="读取 Helm 历史失败",
+                status_code=500,
+                details={"output": exc.output[-500:]},
+            ) from exc
+        revisions = sorted(
+            int(item.get("revision") or 0)
+            for item in history
+            if str(item.get("status") or "") in {"deployed", "superseded"}
+        )
+        target = revision
+        if target is None:
+            if len(revisions) < 2:
+                raise DomainError(
+                    code=ErrorCode.APP_ROLLBACK_FAILED,
+                    message="没有可回滚的历史版本",
+                    status_code=409,
+                    details={"revisions": revisions},
+                )
+            target = revisions[-2]
+        try:
+            await helm.rollback(app.release_name, app.namespace, target)
+        except HelmError as exc:
+            raise DomainError(
+                code=ErrorCode.APP_ROLLBACK_FAILED,
+                message="Helm 回滚失败",
+                status_code=500,
+                details={"output": exc.output[-500:]},
+            ) from exc
+        updated = self._repository.update_app(
+            app.id,
+            status=AppStatus.deployed,
+            phase="deployed",
+            progress=100,
+            error_code=None,
+            error_message=None,
+            finished_at=_now(),
+        )
+        return updated or app
+
+    async def uninstall(self, app_id: str, *, confirm: bool) -> AppRecord:
+        if not confirm:
+            raise DomainError(
+                code=ErrorCode.CONFIRM_REQUIRED,
+                message="卸载会删除 Helm release，需要 confirm=true",
+                status_code=400,
+            )
+        app = self.get_app(app_id)
+        cluster = self._repository.get_cluster(app.cluster_id)
+        if cluster is None or not cluster.kubeconfig_path:
+            raise DomainError(
+                code=ErrorCode.CLUSTER_NOT_READY,
+                message="应用所属集群缺少 kubeconfig，无法卸载",
+                status_code=409,
+            )
+        helm = self._helm(cluster.kubeconfig_path, app.id)
+        try:
+            await helm.uninstall(app.release_name, app.namespace)
+        except HelmError as exc:
+            raise DomainError(
+                code=ErrorCode.APP_UNINSTALL_FAILED,
+                message="Helm 卸载失败",
+                status_code=500,
+                details={"output": exc.output[-500:]},
+            ) from exc
+        self._repository.delete_app(app.id)
+        return app
+
+    def _helm(self, kubeconfig: str, app_id: str) -> HelmClient:
+        commands = CommandRunner(
+            cwd=self._work_dir / app_id, log=lambda _line: None
+        )
+        return HelmClient(commands, kubeconfig)
+
     # ------------------------------------------------------------------
     # 生命周期
     # ------------------------------------------------------------------
@@ -402,6 +677,17 @@ def _build_spec(
         image=image,
         node_port=node_port,
         verify_url=verify_url,
+    )
+
+
+def _preflight_result(checks: list[AppPreflightCheck]) -> AppPreflightResult:
+    passed = sum(1 for item in checks if item.status == "pass")
+    warned = sum(1 for item in checks if item.status == "warn")
+    failed = sum(1 for item in checks if item.status == "fail")
+    return AppPreflightResult(
+        ready=failed == 0,
+        summary=f"{passed} 通过 · {warned} 警告 · {failed} 失败",
+        checks=tuple(checks),
     )
 
 

@@ -229,3 +229,21 @@ def test_unknown_environment_returns_404(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "ENVIRONMENT_NOT_FOUND"
+
+
+def test_create_cluster_api_is_disabled_for_console_first_flow(tmp_path, monkeypatch) -> None:
+    client, services = _build(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/openfuyao/clusters",
+        json={
+            "agent_id": _agent_id(services),
+            "name": "bke-console",
+            "nodes": [],
+            "confirm": True,
+        },
+        headers=AUTH,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "CLUSTER_CREATE_DISABLED"

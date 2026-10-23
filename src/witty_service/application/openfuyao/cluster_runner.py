@@ -167,6 +167,8 @@ class PreflightOutcome:
     def summary(self) -> str:
         if not self.failures:
             return "节点预检通过"
+        if not self.fatal:
+            return f"节点预检通过（{len(self.tolerated)} 项按 OS/内核例外放行）"
         fatal = "；".join(item.summary for item in self.fatal[:3])
         return fatal[:800] or "节点预检未通过"
 

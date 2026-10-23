@@ -228,6 +228,7 @@ class OpenFuyaoClusterRepository:
         status: str | Unset | None = UNSET,
         phase: str | Unset | None = UNSET,
         progress: int | Unset | None = UNSET,
+        expected_node_count: int | Unset | None = UNSET,
         kubeconfig_path: str | Unset | None = UNSET,
         endpoint: str | Unset | None = UNSET,
         preflight_json: dict[str, Any] | Unset | None = UNSET,
@@ -241,6 +242,7 @@ class OpenFuyaoClusterRepository:
             "status": status,
             "phase": phase,
             "progress": progress,
+            "expected_node_count": expected_node_count,
             "kubeconfig_path": kubeconfig_path,
             "endpoint": endpoint,
             "preflight_json": preflight_json,
@@ -313,6 +315,62 @@ class OpenFuyaoClusterRepository:
                 )
                 .values(**values)
             )
+            session.commit()
+
+    def upsert_node(
+        self,
+        cluster_id: str,
+        *,
+        ip: str,
+        hostname: str,
+        port: int,
+        username: str,
+        role: str,
+        is_local: bool,
+        status: str,
+        phase: str,
+        error_code: str | None = None,
+        last_message: str | None = None,
+    ) -> None:
+        """控制台侧新增/变化的节点：按 IP 更新，不存在则补一行（不存密码）。"""
+        now = utcnow()
+        with self._session_factory() as session:
+            row = session.scalar(
+                select(OpenFuyaoClusterNodeORM).where(
+                    OpenFuyaoClusterNodeORM.cluster_id == cluster_id,
+                    OpenFuyaoClusterNodeORM.ip == ip,
+                )
+            )
+            if row is None:
+                session.add(
+                    OpenFuyaoClusterNodeORM(
+                        id=str(uuid4()),
+                        cluster_id=cluster_id,
+                        ip=ip,
+                        hostname=hostname,
+                        port=port,
+                        username=username,
+                        role=role,
+                        is_local=is_local,
+                        status=status,
+                        phase=phase,
+                        error_code=error_code,
+                        last_message=last_message,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                row.hostname = hostname
+                row.port = port
+                row.username = username
+                row.role = role
+                row.is_local = is_local
+                row.status = status
+                row.phase = phase
+                row.error_code = error_code
+                row.last_message = last_message
+                row.updated_at = now
             session.commit()
 
     def set_all_nodes_status(
@@ -430,6 +488,11 @@ class OpenFuyaoClusterRepository:
         status: str | Unset | None = UNSET,
         phase: str | Unset | None = UNSET,
         progress: int | Unset | None = UNSET,
+        repo_name: str | Unset | None = UNSET,
+        chart_name: str | Unset | None = UNSET,
+        chart_version: str | Unset | None = UNSET,
+        values_json: dict[str, Any] | Unset | None = UNSET,
+        image_override: str | Unset | None = UNSET,
         node_port: int | Unset | None = UNSET,
         verify_url: str | Unset | None = UNSET,
         error_code: str | Unset | None = UNSET,
@@ -442,6 +505,11 @@ class OpenFuyaoClusterRepository:
             "status": status,
             "phase": phase,
             "progress": progress,
+            "repo_name": repo_name,
+            "chart_name": chart_name,
+            "chart_version": chart_version,
+            "values_json": values_json,
+            "image_override": image_override,
             "node_port": node_port,
             "verify_url": verify_url,
             "error_code": error_code,
@@ -490,6 +558,13 @@ class OpenFuyaoClusterRepository:
             statement = statement.where(OpenFuyaoAppORM.agent_id == agent_id)
         with self._session_factory() as session:
             return [_app(row) for row in session.scalars(statement)]
+
+    def delete_app(self, app_id: str) -> None:
+        with self._session_factory() as session:
+            row = session.get(OpenFuyaoAppORM, app_id)
+            if row is not None:
+                session.delete(row)
+                session.commit()
 
     def recover_interrupted_apps(self) -> int:
         now = utcnow()

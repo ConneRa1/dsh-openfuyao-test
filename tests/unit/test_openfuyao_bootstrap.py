@@ -24,6 +24,7 @@ from witty_service.application.openfuyao.console_health import (
     build_proxy_url,
     check_console,
     console_login_url,
+    probe_console_session,
 )
 from witty_service.application.openfuyao.preflight import (
     PreflightCheck,
@@ -48,6 +49,66 @@ def _report(*, ready: bool = True) -> PreflightReport:
             ),
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_probe_console_session_marks_ambiguous_cookie_handling() -> None:
+    """老 bke-console 对未知会话固定回 cookie not found，不能据此断言 Cookie 被丢掉。"""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"code": 401, "msg": "cookie not found"})
+
+    probe = await probe_console_session(
+        "https://192.0.2.10:30010", transport=httpx.MockTransport(handler)
+    )
+    assert probe.reachable is True
+    assert probe.session_capable is None
+    assert probe.reason == "session_cookie_unobservable"
+
+
+@pytest.mark.asyncio
+async def test_probe_console_session_accepts_forwarded_cookie() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "cookie" in request.headers:
+            return httpx.Response(
+                401, json={"code": 401, "msg": "cannot get token from sessionID"}
+            )
+        return httpx.Response(401, json={"code": 401, "msg": "cookie not found"})
+
+    probe = await probe_console_session(
+        "https://192.0.2.10:31616", transport=httpx.MockTransport(handler)
+    )
+    assert probe.session_capable is True
+    assert probe.reason == "cookie_forwarded"
+
+
+@pytest.mark.asyncio
+async def test_probe_console_session_observes_seeded_response_change() -> None:
+    """带 Cookie 的响应与匿名响应不同，说明 Cookie 进入了服务端处理分支。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        message = "cookie not found"
+        if "cookie" in request.headers:
+            message = "unexpected probe response"
+        return httpx.Response(401, json={"code": 401, "msg": message})
+
+    probe = await probe_console_session(
+        "https://192.0.2.10:30010", transport=httpx.MockTransport(handler)
+    )
+    assert probe.session_capable is True
+    assert probe.reason == "session_cookie_observed"
+
+
+@pytest.mark.asyncio
+async def test_probe_console_session_marks_unreachable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    probe = await probe_console_session(
+        "https://192.0.2.10:30010", transport=httpx.MockTransport(handler)
+    )
+    assert probe.reachable is False
+    assert probe.session_capable is None
 
 
 def test_console_urls() -> None:

@@ -23,6 +23,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from witty_service.application.openfuyao.cluster_runner import (
     ClusterCancelled,
@@ -37,7 +38,7 @@ from witty_service.application.openfuyao.cluster_spec import (
     NodeSpecError,
     normalize_nodes,
 )
-from witty_service.application.openfuyao.kube import KubeClient
+from witty_service.application.openfuyao.kube import ConsoleEndpoint, KubeClient
 from witty_service.application.openfuyao.log_tail import (
     DEFAULT_CHUNK_BYTES,
     LogPage,
@@ -118,6 +119,16 @@ def _not_found(cluster_id: str) -> DomainError:
     )
 
 
+def _endpoint_host(endpoint: str | None) -> str | None:
+    """从 ``https://1.2.3.4:6443`` 取主机部分；解析失败交给 kube 侧自行挑节点。"""
+    if not endpoint:
+        return None
+    try:
+        return urlsplit(endpoint).hostname
+    except ValueError:
+        return None
+
+
 class ClusterService:
     def __init__(
         self,
@@ -182,6 +193,15 @@ class ClusterService:
 
     def log_path(self, cluster_id: str) -> Path:
         return self._work_dir / cluster_id / "cluster.log"
+
+    async def business_console(self, cluster_id: str) -> ConsoleEndpoint:
+        """业务控制台入口：现查 ingress NodePort，不在配置/前端里写死端口。"""
+        record = self.get_cluster(cluster_id)
+        if record.status != ClusterStatus.ready:
+            return ConsoleEndpoint(reason="cluster_not_ready")
+        commands = CommandRunner(cwd=self._work_dir / record.id, log=lambda _line: None)
+        client = KubeClient(commands, self._settings.cluster_kubeconfig)
+        return await client.resolve_console_url(host=_endpoint_host(record.endpoint))
 
     # ------------------------------------------------------------------
     # 创建
@@ -522,9 +542,7 @@ class ClusterService:
                 status_code=409,
             )
         nodes = self.nodes(record.id)
-        commands = CommandRunner(
-            cwd=self._work_dir / record.id, log=lambda _line: None
-        )
+        commands = CommandRunner(cwd=self._work_dir / record.id, log=lambda _line: None)
         client = KubeClient(commands, self._settings.kubeconfig)
         result = await client.delete_cluster(record.namespace, record.name)
         if result.returncode != 0:

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -22,6 +23,7 @@ from witty_service.application.openfuyao.process import (
 
 __all__ = [
     "ClusterObservation",
+    "ConsoleEndpoint",
     "KubeClient",
     "NodeObservation",
 ]
@@ -47,6 +49,18 @@ class ClusterObservation:
                 if text:
                     return str(text)
         return self.message
+
+
+@dataclass(frozen=True, slots=True)
+class ConsoleEndpoint:
+    """业务控制台的入口地址（发现结果，不落库）。
+
+    ``url`` 为空时 ``reason`` 说明原因，前端据此显示"集群创建后可用"之类的空态，
+    而不是把可能存在也可能不存在的端口写死在代码里。
+    """
+
+    url: str | None = None
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,9 +99,59 @@ class KubeClient:
             return None
         return payload if isinstance(payload, dict) else None
 
-    async def observe_cluster(
-        self, namespace: str, name: str
-    ) -> ClusterObservation:
+    async def get_json(self, argv: list[str], *, timeout: float = 30.0) -> dict[str, Any] | None:
+        """执行一次只读 kubectl 并解析 JSON；供控制台资源发现复用。"""
+        return await self._get_json(argv, timeout=timeout)
+
+    async def list_bke_clusters(self) -> list[dict[str, Any]] | None:
+        """管理面所有 BKECluster；``None`` 表示查询失败（区别于“确实没有”）。"""
+        payload = await self._get_json(
+            ["get", "bkeclusters.bke.bocloud.com", "-A", "-o", "json"]
+        )
+        if payload is None:
+            return None
+        items = payload.get("items") or []
+        return [item for item in items if isinstance(item, dict)]
+
+    async def list_bke_nodes(
+        self, namespace: str, cluster_name: str
+    ) -> list[dict[str, Any]] | None:
+        payload = await self._get_json(
+            [
+                "-n",
+                namespace,
+                "get",
+                "bkenodes.bke.bocloud.com",
+                "-l",
+                f"cluster.x-k8s.io/cluster-name={cluster_name}",
+                "-o",
+                "json",
+            ]
+        )
+        if payload is None:
+            return None
+        items = payload.get("items") or []
+        return [item for item in items if isinstance(item, dict)]
+
+    async def get_secret_value(
+        self, namespace: str, name: str, key: str = "value"
+    ) -> str | None:
+        """读取 Secret 的 base64 值；BKE 的 kubeconfig 存在 ``<cluster>-kubeconfig``。"""
+        payload = await self._get_json(["-n", namespace, "get", "secret", name, "-o", "json"])
+        if payload is None:
+            return None
+        data = payload.get("data") or {}
+        if not isinstance(data, dict):
+            return None
+        raw = data.get(key)
+        if not isinstance(raw, str) or not raw:
+            return None
+        try:
+            return base64.b64decode(raw).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+
+    async def observe_cluster(self, namespace: str, name: str) -> ClusterObservation:
         payload = await self._get_json(
             ["-n", namespace, "get", "bkecluster", name, "-o", "json"]
         )
@@ -174,6 +238,57 @@ class KubeClient:
                 message=str((ready_condition or {}).get("message") or ""),
             )
         return result
+
+    async def resolve_console_url(self, *, host: str | None = None) -> ConsoleEndpoint:
+        """业务控制台地址 = ingress-nginx 的 443 NodePort + 一个可达节点 IP。
+
+        NodePort 是安装时随机分配的（本环境两次安装分别是 31616 / 30010），
+        因此每次现查，不做配置项、不在前端硬编码。
+        """
+        payload = await self._get_json(
+            [
+                "-n",
+                "ingress-nginx",
+                "get",
+                "svc",
+                "ingress-nginx-controller",
+                "-o",
+                "json",
+            ]
+        )
+        if payload is None:
+            return ConsoleEndpoint(reason="ingress_not_ready")
+        ports = (payload.get("spec") or {}).get("ports") or []
+        node_port = next(
+            (
+                int(port["nodePort"])
+                for port in ports
+                if isinstance(port, dict)
+                and port.get("port") == 443
+                and port.get("nodePort")
+            ),
+            None,
+        )
+        if node_port is None:
+            return ConsoleEndpoint(reason="node_port_missing")
+        target = host or await self._first_node_address()
+        if not target:
+            return ConsoleEndpoint(reason="no_node_address")
+        return ConsoleEndpoint(url=f"https://{target}:{node_port}/")
+
+    async def _first_node_address(self) -> str | None:
+        payload = await self._get_json(["get", "nodes", "-o", "json"])
+        if payload is None:
+            return None
+        for item in payload.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for address in (item.get("status") or {}).get("addresses") or []:
+                if isinstance(address, dict) and address.get("type") == "InternalIP":
+                    value = str(address.get("address") or "")
+                    if value:
+                        return value
+        return None
 
     async def delete_cluster(self, namespace: str, name: str) -> CommandResult:
         return await self._commands.run_capture(

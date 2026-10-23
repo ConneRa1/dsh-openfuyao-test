@@ -9,12 +9,17 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from witty_service.api.auth import require_bearer_auth
 from witty_service.api.openfuyao_schemas import (
     AppInstallRequest,
+    AppPreflightCheckResponse,
+    AppPreflightRequest,
+    AppPreflightResponse,
     AppResponse,
     BootstrapRequest,
+    ClusterConsoleResponse,
     ClusterPreflightFailureResponse,
     ClusterPreflightRequest,
     ClusterPreflightResponse,
     ClusterResponse,
+    ConsoleSessionProbeResponse,
     CreateAppResponse,
     CreateClusterRequest,
     CreateClusterResponse,
@@ -23,8 +28,12 @@ from witty_service.api.openfuyao_schemas import (
     EnvironmentHealthResponse,
     EnvironmentLogsResponse,
     EnvironmentResponse,
+    OpenFuyaoIssueResponse,
+    OpenFuyaoOverviewResponse,
 )
 from witty_service.api.services import ServiceContainer
+from witty_service.domain.errors import DomainError
+from witty_service.domain.openfuyao import ErrorCode
 
 router = APIRouter(
     prefix="/openfuyao",
@@ -140,6 +149,44 @@ async def check_environment_health(
     return EnvironmentHealthResponse(**health.to_dict(), proxy_url=record.proxy_url)
 
 
+@router.get("/overview", response_model=OpenFuyaoOverviewResponse)
+async def openfuyao_overview(
+    agent_id: str = Query(min_length=1),
+    services: ServiceContainer = Depends(get_services),
+) -> OpenFuyaoOverviewResponse:
+    """感知控制台侧变化：BKE 集群、Helm 应用、Pod 异常，并纳管到本服务。"""
+    observed = await services.get_openfuyao_observer().refresh(agent_id)
+    guide = observed.guide_console
+    return OpenFuyaoOverviewResponse(
+        clusters=[
+            ClusterResponse.from_record(
+                record, list(services.get_cluster_service().nodes(record.id))
+            ).model_copy(update={"preflight": None})
+            for record in observed.clusters
+        ],
+        apps=[AppResponse.from_record(record) for record in observed.apps],
+        issues=[OpenFuyaoIssueResponse(**issue.to_dict()) for issue in observed.issues],
+        console=ClusterConsoleResponse(
+            available=observed.console.url is not None,
+            url=observed.console.url,
+            reason=observed.console.reason,
+        ),
+        guide_console=(
+            ConsoleSessionProbeResponse(
+                url=guide.console_url,
+                reachable=guide.reachable,
+                session_capable=guide.session_capable,
+                reason=guide.reason,
+            )
+            if guide is not None
+            else None
+        ),
+        refreshed_at=observed.refreshed_at,
+        discovered=observed.discovered,
+        errors=list(observed.errors),
+    )
+
+
 # ==============================================================================
 # 阶段 2：集群
 # ==============================================================================
@@ -179,29 +226,17 @@ async def cluster_preflight(
 @router.post("/clusters", response_model=CreateClusterResponse)
 async def create_cluster(
     payload: CreateClusterRequest,
-    response: Response,
     services: ServiceContainer = Depends(get_services),
 ) -> CreateClusterResponse:
-    result = await services.get_cluster_service().create_cluster(
-        agent_id=payload.agent_id,
-        name=payload.name,
-        raw_nodes=[node.model_dump() for node in payload.nodes],
-        confirm=payload.confirm,
-        dry_run=payload.dry_run,
-    )
-    response.status_code = (
-        status.HTTP_201_CREATED if result.created else status.HTTP_200_OK
-    )
-    cluster = (
-        ClusterResponse.from_record(result.cluster, list(result.nodes))
-        if result.cluster is not None
-        else None
-    )
-    return CreateClusterResponse(
-        cluster=cluster,
-        plan=[dict(step) for step in result.plan],
-        created=result.created,
-        needs_confirm=result.needs_confirm,
+    """阶段 2 已收口到控制台；API 保留路径但不再接受创建请求。"""
+    del payload, services
+    raise DomainError(
+        code=ErrorCode.CLUSTER_CREATE_DISABLED,
+        message=(
+            "阶段 2 已改为在引导节点控制台手动创建业务集群；"
+            "PolyMind 只负责感知、诊断和应用安装。"
+        ),
+        status_code=409,
     )
 
 
@@ -225,6 +260,19 @@ def get_cluster(
     service = services.get_cluster_service()
     record = service.get_cluster(cluster_id)
     return ClusterResponse.from_record(record, list(service.nodes(record.id)))
+
+
+@router.get("/clusters/{cluster_id}/console", response_model=ClusterConsoleResponse)
+async def cluster_console(
+    cluster_id: str,
+    services: ServiceContainer = Depends(get_services),
+) -> ClusterConsoleResponse:
+    endpoint = await services.get_cluster_service().business_console(cluster_id)
+    return ClusterConsoleResponse(
+        available=endpoint.url is not None,
+        url=endpoint.url,
+        reason=endpoint.reason,
+    )
 
 
 @router.post("/clusters/{cluster_id}/cancel", response_model=ClusterResponse)
@@ -278,6 +326,30 @@ def read_cluster_logs(
 # ==============================================================================
 
 
+@router.post("/apps/preflight", response_model=AppPreflightResponse)
+async def preflight_app(
+    payload: AppPreflightRequest,
+    services: ServiceContainer = Depends(get_services),
+) -> AppPreflightResponse:
+    result = await services.get_app_service().preflight(
+        agent_id=payload.agent_id,
+        cluster_name=payload.cluster,
+        release_name=payload.release_name,
+        namespace=payload.namespace,
+        chart_dir=payload.chart_dir,
+        repo_url=payload.repo_url,
+        chart=payload.chart,
+        chart_version=payload.chart_version,
+        image=payload.image,
+        node_port=payload.node_port,
+    )
+    return AppPreflightResponse(
+        ready=result.ready,
+        summary=result.summary,
+        checks=[AppPreflightCheckResponse(**item.to_dict()) for item in result.checks],
+    )
+
+
 @router.post("/apps", response_model=CreateAppResponse)
 async def install_app(
     payload: AppInstallRequest,
@@ -319,6 +391,30 @@ def list_apps(
         cluster_id=cluster_id, agent_id=agent_id
     )
     return [AppResponse.from_record(record) for record in records]
+
+
+@router.post("/apps/{app_id}/rollback", response_model=AppResponse)
+async def rollback_app(
+    app_id: str,
+    revision: int | None = Query(default=None, ge=1),
+    confirm: bool = Query(default=False),
+    services: ServiceContainer = Depends(get_services),
+) -> AppResponse:
+    return AppResponse.from_record(
+        await services.get_app_service().rollback(
+            app_id, revision=revision, confirm=confirm
+        )
+    )
+
+
+@router.delete("/apps/{app_id}")
+async def uninstall_app(
+    app_id: str,
+    confirm: bool = Query(default=False),
+    services: ServiceContainer = Depends(get_services),
+) -> dict[str, Any]:
+    app = await services.get_app_service().uninstall(app_id, confirm=confirm)
+    return {"uninstalled": app.release_name, "namespace": app.namespace}
 
 
 @router.get("/apps/{app_id}", response_model=AppResponse)

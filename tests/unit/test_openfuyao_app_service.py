@@ -256,3 +256,75 @@ async def test_app_runner_treats_string_true_condition_as_ready(tmp_path) -> Non
     runner._kubectl_json = _fake_kubectl  # type: ignore[method-assign]
     pods = await runner._pods()
     assert pods == [{"name": "r-abc", "phase": "Running", "ready": True}]
+
+
+class _FakeHelm:
+    def __init__(self, entries: list[dict[str, Any]]) -> None:
+        self.entries = entries
+        self.rolled_back: list[tuple[str, str, int]] = []
+        self.uninstalled: list[tuple[str, str]] = []
+
+    async def history(self, release: str, namespace: str) -> list[dict[str, Any]]:
+        del release, namespace
+        return self.entries
+
+    async def rollback(self, release: str, namespace: str, revision: int) -> None:
+        self.rolled_back.append((release, namespace, revision))
+
+    async def uninstall(self, release: str, namespace: str) -> None:
+        self.uninstalled.append((release, namespace))
+
+
+async def _seed_deployed_app(harness: _Harness, tmp_path: Path) -> Any:
+    result = await harness.service.install(**_install_kwargs(tmp_path))
+    assert result.app is not None
+    return await harness.wait_deployed(result.app.id)
+
+
+@pytest.mark.asyncio
+async def test_rollback_uses_previous_revision_and_marks_deployed(tmp_path) -> None:
+    harness = _Harness(tmp_path)
+    try:
+        app = await _seed_deployed_app(harness, tmp_path)
+        fake = _FakeHelm(
+            [
+                {"revision": 1, "status": "superseded"},
+                {"revision": 2, "status": "deployed"},
+            ]
+        )
+        harness.service._helm = lambda *_args, **_kwargs: fake  # type: ignore[method-assign]
+        updated = await harness.service.rollback(app.id, revision=None, confirm=True)
+        assert fake.rolled_back == [("nginx-demo", "default", 1)]
+        assert updated.status == "deployed"
+        assert updated.progress == 100
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_rollback_without_history_is_rejected(tmp_path) -> None:
+    harness = _Harness(tmp_path)
+    try:
+        app = await _seed_deployed_app(harness, tmp_path)
+        fake = _FakeHelm([{"revision": 1, "status": "deployed"}])
+        harness.service._helm = lambda *_args, **_kwargs: fake  # type: ignore[method-assign]
+        with pytest.raises(DomainError) as excinfo:
+            await harness.service.rollback(app.id, revision=None, confirm=True)
+        assert excinfo.value.code is ErrorCode.APP_ROLLBACK_FAILED
+    finally:
+        await harness.close()
+
+
+@pytest.mark.asyncio
+async def test_uninstall_deletes_app_record(tmp_path) -> None:
+    harness = _Harness(tmp_path)
+    try:
+        app = await _seed_deployed_app(harness, tmp_path)
+        fake = _FakeHelm([])
+        harness.service._helm = lambda *_args, **_kwargs: fake  # type: ignore[method-assign]
+        removed = await harness.service.uninstall(app.id, confirm=True)
+        assert removed.id == app.id
+        assert fake.uninstalled == [("nginx-demo", "default")]
+        assert harness.repository.get_app(app.id) is None
+    finally:
+        await harness.close()

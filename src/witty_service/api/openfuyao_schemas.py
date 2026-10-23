@@ -209,6 +209,14 @@ class ClusterResponse(BaseModel):
         )
 
 
+class ClusterConsoleResponse(BaseModel):
+    """业务控制台入口；``url`` 为空时用 ``reason`` 解释为什么不可用。"""
+
+    available: bool
+    url: str | None = None
+    reason: str | None = None
+
+
 class CreateClusterResponse(BaseModel):
     cluster: ClusterResponse | None
     plan: list[dict[str, str | int]]
@@ -300,3 +308,76 @@ class CreateAppResponse(BaseModel):
     app: AppResponse | None
     created: bool
     needs_confirm: bool = False
+
+
+class OpenFuyaoIssueResponse(BaseModel):
+    """控制台资源的一条可执行诊断结论。"""
+
+    id: str
+    code: str
+    severity: Literal["info", "warn", "error"]
+    source: str
+    title: str
+    message: str
+    remediation: str = ""
+    resource_id: str | None = None
+    resource_name: str | None = None
+
+
+class ConsoleSessionProbeResponse(BaseModel):
+    """引导节点控制台入口的 Cookie 透传探测结果。
+
+    ``session_capable`` 只能证明 Cookie 被 console-service 读到（``True``）；老版本
+    bke-console 对未知会话固定回 ``cookie not found``，无法与“入口丢 Cookie”区分，
+    此时返回 ``None``。前端不应据此把引导节点控制台替换成业务控制台。
+    """
+
+    url: str | None = None
+    reachable: bool
+    session_capable: bool | None = None
+    reason: str | None = None
+
+
+class OpenFuyaoOverviewResponse(BaseModel):
+    """PolyMind 感知到的 openFuyao 当前状态。
+
+    ``clusters``/``apps`` 是**纳管后的数据库对象**，包含了从控制台发现并导入的
+    集群和应用；``issues`` 是可直接展示/交给 Agent 的诊断结论。
+    """
+
+    clusters: list[ClusterResponse]
+    apps: list[AppResponse]
+    issues: list[OpenFuyaoIssueResponse]
+    console: ClusterConsoleResponse
+    #: 引导节点控制台探测；仅用于诊断，不驱动前端切换控制台地址。
+    guide_console: ConsoleSessionProbeResponse | None = None
+    refreshed_at: str
+    discovered: bool = True
+    errors: list[str] = Field(default_factory=list)
+
+
+class AppPreflightRequest(BaseModel):
+    agent_id: str = Field(min_length=1)
+    cluster: str = Field(min_length=1)
+    release_name: str = Field(min_length=1, max_length=63)
+    namespace: str = "default"
+    chart_dir: str | None = None
+    repo_url: str | None = None
+    chart: str | None = None
+    chart_version: str | None = None
+    image: str | None = None
+    node_port: int | None = None
+
+
+class AppPreflightCheckResponse(BaseModel):
+    code: str
+    status: Literal["pass", "warn", "fail"]
+    title: str
+    message: str
+    remediation: str = ""
+
+
+class AppPreflightResponse(BaseModel):
+    ready: bool
+    summary: str
+    checks: list[AppPreflightCheckResponse]

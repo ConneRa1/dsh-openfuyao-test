@@ -577,6 +577,8 @@ class OpenFuyaoSettings:
     cluster_ready_timeout_seconds: float = 1800.0
     #: 应用安装（helm + Pod Ready）超时
     app_install_timeout_seconds: float = 900.0
+    #: 是否从控制台/Helm 反向发现手工创建的集群与应用（默认开；测试可关）
+    console_discovery: bool = True
 
     @classmethod
     def from_env(cls) -> "OpenFuyaoSettings":
@@ -623,6 +625,10 @@ class OpenFuyaoSettings:
             app_install_timeout_seconds=float(
                 os.getenv("OPENFUYAO_APP_INSTALL_TIMEOUT_SECONDS", "900")
             ),
+            console_discovery=os.getenv(
+                "OPENFUYAO_CONSOLE_DISCOVERY", "true"
+            ).lower()
+            in ("1", "true", "yes"),
         )
 
 

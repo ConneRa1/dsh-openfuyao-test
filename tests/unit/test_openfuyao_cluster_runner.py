@@ -73,6 +73,8 @@ def test_preflight_outcome_ready_except_tolerated() -> None:
         payload={}, failures=(tolerated,), tolerated=(tolerated,)
     )
     assert only_tolerated.ready
+    assert "通过" in only_tolerated.summary()
+    assert "未通过" not in only_tolerated.summary()
 
 
 def test_failed_results_is_case_insensitive() -> None:

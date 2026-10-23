@@ -14,6 +14,7 @@ from witty_service.application.openfuyao.cluster_service import ClusterService
 from witty_service.application.openfuyao.environment_service import (
     EnvironmentService,
 )
+from witty_service.application.openfuyao.overview import OpenFuyaoObserver
 from witty_service.application.scheduled_task_service import ScheduledTaskService
 from witty_service.application.session_manager import SessionManager
 from witty_service.channels.credential_store import ChannelCredentialStore
@@ -74,6 +75,8 @@ class ServiceContainer:
     #: 阶段 2/3：业务集群与应用编排
     cluster_service: ClusterService | None = field(init=False, default=None)
     app_service: AppService | None = field(init=False, default=None)
+    #: 控制台侧资源感知/纳管（只读 kubectl + helm list）
+    openfuyao_observer: OpenFuyaoObserver | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         self.session_manager = SessionManager(repository=self.repository)
@@ -184,6 +187,18 @@ class ServiceContainer:
                 workspace_root=Path(self.workspace_store.base_dir),
             )
         return self.app_service
+
+    def get_openfuyao_observer(self) -> OpenFuyaoObserver:
+        if self.openfuyao_observer is None:
+            self.openfuyao_observer = OpenFuyaoObserver(
+                repository=self._cluster_repository(),
+                environment_repository=OpenFuyaoRepository(
+                    self.repository.session_factory
+                ),
+                settings=get_settings().openfuyao,
+                workspace_root=Path(self.workspace_store.base_dir),
+            )
+        return self.openfuyao_observer
 
     def get_sandbox_backend(self, sandbox_type: str) -> SandboxBackend:
         key = sandbox_type.lower()
