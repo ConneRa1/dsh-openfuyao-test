@@ -150,7 +150,7 @@ skips = ["B404", "B603", "B607"]
 [tool.codespell]
 skip = ".git,.venv,uv.lock,build,dist,*.egg-info,coverage.json,.mypy_cache,.pytest_cache,.ruff_cache,data,node_modules"
 quiet-level = 3
-ignore-words-list = "buildin,hel"
+ignore-words-list = "buildin,hel,cann"
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
