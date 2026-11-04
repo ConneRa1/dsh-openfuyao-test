@@ -62,6 +62,7 @@ dev = [
 
 [project.scripts]
 witty-service = "witty_service.cli:main"
+witty-openfuyao-sidecar = "witty_service.sidecar.__main__:main"
 
 [project.urls]
 homepage = "https://github.com/openwitty/witty-service"
@@ -76,6 +77,7 @@ packages = [
     "witty_service.alembic.versions",
     "witty_service.data",
     "witty_service.api",
+    "witty_service.sidecar",
     "witty_service.adapter",
     "witty_service.channels",
     "witty_service.channels.adapters",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
@@ -31,9 +31,16 @@ from witty_service.api.openfuyao_schemas import (
     OpenFuyaoIssueResponse,
     OpenFuyaoOverviewResponse,
 )
-from witty_service.api.services import ServiceContainer
 from witty_service.domain.errors import DomainError
 from witty_service.domain.openfuyao import ErrorCode
+
+if TYPE_CHECKING:
+    from witty_service.api.services import ServiceContainer
+else:
+    # FastAPI evaluates parameter annotations when it registers the routes.
+    # The sidecar must not import api.services (and the full service
+    # container) just to satisfy that lookup, so keep a cheap runtime alias.
+    ServiceContainer = Any
 
 router = APIRouter(
     prefix="/openfuyao",
