@@ -7,8 +7,9 @@
  * Sidebar (and in its own + menu), so the panel is reachable without a second
  * application shell or an iframe.
  *
- * The tab is a read-only status view: what is installed for this agent, which
- * business clusters and applications exist, and how to reach the console.
+ * When no environment is ready, the same tab renders the Host preflight and a
+ * user-confirmed deployment action; otherwise it stays a status/diagnostics
+ * view.
  */
 
 window.__ModuleLoader__.load({
@@ -269,8 +270,55 @@ window.__ModuleLoader__.load({
       return fetchJson('openfuyao/api/overview', { signal });
     }
 
+    // POST, not GET: the Host route runs the host preflight upstream. A Host
+    // from before the method change only serves GET, and a page refresh without
+    // a plugin reload is a documented upgrade path, so fall back once.
+    async function loadPlan(signal) {
+      try {
+        return await postJson('openfuyao/api/plan', {}, signal);
+      } catch (error) {
+        if (!isRouteUnavailable(error)) throw error;
+        return fetchJson('openfuyao/api/plan', { signal });
+      }
+    }
+
     function loadEnvironments(signal) {
       return fetchJson('openfuyao/api/environments', { signal });
+    }
+
+    function loadLogTail(environmentId, signal) {
+      const query = new URLSearchParams({ environment_id: environmentId, tail: '1' });
+      return fetchJson(`openfuyao/api/logs?${query}`, { signal });
+    }
+
+    function loadLogs(environmentId, cursor, signal) {
+      const query = new URLSearchParams({
+        environment_id: environmentId,
+        cursor: String(cursor),
+      });
+      return fetchJson(`openfuyao/api/logs?${query}`, { signal });
+    }
+
+    function postJson(path, body, signal) {
+      return fetchJson(path, { method: 'POST', body, signal });
+    }
+
+    /**
+     * Whether a panel route is missing from the loaded Host plugin.
+     *
+     * Client bundles are composed when the page loads, while Host code only
+     * changes on a plugin reload. A browser bundle newer than the Host asks for
+     * a POST route the Host never registered; that request falls through to the
+     * Web static fallback, which answers a non-GET/HEAD request with a plain
+     * 405 instead of the panel's JSON envelope.
+     */
+    function isRouteUnavailable(error) {
+      const status = Number(error?.status);
+      return status === 404
+        || status === 405
+        || error?.code === 'HTTP_404'
+        || error?.code === 'HTTP_405'
+        || error?.code === 'METHOD_NOT_ALLOWED';
     }
 
     function formatTime(value) {
@@ -298,6 +346,45 @@ window.__ModuleLoader__.load({
       if (mode === 'sidecar') return t('modeSidecar');
       if (mode === 'external') return t('modeExternal');
       return mode || t('unknown');
+    }
+
+    const PHASE_ORDER = ['preflight', 'install_bke', 'bke_init', 'wait_console'];
+    const PHASE_TITLE = {
+      preflight: 'phasePreflight',
+      install_bke: 'phaseInstallBke',
+      bke_init: 'phaseBkeInit',
+      wait_console: 'phaseWaitConsole',
+      done: 'phaseDone',
+    };
+
+    function phaseTitle(phase, t) {
+      return PHASE_TITLE[phase] ? t(PHASE_TITLE[phase]) : '';
+    }
+
+    function phaseStep(phase) {
+      const index = PHASE_ORDER.indexOf(phase);
+      if (index >= 0) return index + 1;
+      if (phase === 'done') return PHASE_ORDER.length;
+      return null;
+    }
+
+    function formatElapsed(milliseconds) {
+      const total = Math.max(0, Math.floor(Number(milliseconds) / 1000) || 0);
+      const hours = Math.floor(total / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      const seconds = total % 60;
+      const mm = String(minutes).padStart(2, '0');
+      const ss = String(seconds).padStart(2, '0');
+      return hours > 0 ? `${hours}:${mm}:${ss}` : `${mm}:${ss}`;
+    }
+
+    function stripAnsi(value) {
+      return String(value ?? '').replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
+    }
+
+    function oneLineLog(value, limit = 320) {
+      const text = stripAnsi(value).replace(/\s+/g, ' ').trim();
+      return text.length > limit ? `${text.slice(0, limit)}…` : text;
     }
 
     function Logo({ size = 18 }) {
@@ -374,6 +461,19 @@ window.__ModuleLoader__.load({
         },
       }),
       label ?? value ?? '—');
+    }
+
+    function Spinner({ size = 12 }) {
+      return h('span', {
+        'aria-hidden': true,
+        style: {
+          display: 'inline-block', width: size, height: size, flex: '0 0 auto',
+          borderRadius: '50%',
+          border: '2px solid var(--dsw-alias-border-l2)',
+          borderTopColor: 'var(--dsw-alias-brand-primary)',
+          animation: 'ofu-spin 0.8s linear infinite',
+        },
+      });
     }
 
     function Progress({ value, active = false, failed = false }) {
@@ -549,6 +649,583 @@ window.__ModuleLoader__.load({
       t('loading'));
     }
 
+    function deployStatusLabel(status, t) {
+      if (status === 'bootstrapping') return t('deploying');
+      if (status === 'waiting_console') return t('waitingConsole');
+      if (status === 'ready') return t('deployReady');
+      if (status === 'failed') return t('deployFailed');
+      if (status === 'cancelled') return t('deployCancelled');
+      return t('deployPending');
+    }
+
+    function PreflightRow({ check }) {
+      const status = String(check?.status || '').toLowerCase();
+      const color = status === 'pass'
+        ? 'var(--dsw-alias-state-success-primary)'
+        : status === 'warn'
+          ? 'var(--dsw-alias-state-warn-primary)'
+          : 'var(--dsw-alias-state-error-primary)';
+      return h('div', {
+        style: {
+          display: 'flex', gap: 7, padding: '6px 0',
+          borderTop: '1px solid var(--dsw-alias-border-l1)',
+        },
+      },
+      h('span', {
+        style: {
+          width: 14, flex: '0 0 auto', textAlign: 'center',
+          color, fontWeight: 700, fontSize: 12,
+        },
+      }, status === 'pass' ? '✓' : status === 'warn' ? '!' : '×'),
+      h('div', { style: { minWidth: 0, flex: 1 } },
+        h('div', { style: { display: 'flex', gap: 6, alignItems: 'baseline', flexWrap: 'wrap' } },
+          h('span', { style: { fontSize: 11.5, fontWeight: 600 } },
+            check?.title || check?.code || ''),
+          h('span', {
+            style: {
+              fontSize: 10.5, lineHeight: '16px',
+              color: 'var(--dsw-alias-label-secondary)',
+              overflowWrap: 'anywhere',
+            },
+          }, check?.message || ''))));
+    }
+
+    function PreflightList({ report, t }) {
+      if (!report) return h(Empty, null, t('preflightEmpty'));
+      const checks = Array.isArray(report.checks) ? report.checks : [];
+      const summary = report.summary || {};
+      const pass = Number(summary.pass) || 0;
+      const warn = Number(summary.warn) || 0;
+      const fail = Number(summary.fail) || 0;
+      const verdict = report.ready
+        ? (warn > 0 ? t('preflightWarn') : t('preflightReady'))
+        : t('preflightFailed');
+      const verdictColor = !report.ready
+        ? 'var(--dsw-alias-state-error-primary)'
+        : warn > 0
+          ? 'var(--dsw-alias-state-warn-primary)'
+          : 'var(--dsw-alias-state-success-primary)';
+      return h('div', { style: { marginTop: 4 } },
+        h('div', {
+          style: {
+            display: 'flex', gap: 10, flexWrap: 'wrap',
+            fontSize: 10.5, fontWeight: 600, alignItems: 'center',
+          },
+        },
+        h('span', { style: { color: 'var(--dsw-alias-state-success-primary)' } }, `${pass} ${t('passed')}`),
+        h('span', { style: { color: 'var(--dsw-alias-state-warn-primary)' } }, `${warn} ${t('warnings')}`),
+        h('span', { style: { color: 'var(--dsw-alias-state-error-primary)' } }, `${fail} ${t('failed')}`),
+        h('span', {
+          style: { marginLeft: 'auto', color: verdictColor },
+        }, verdict)),
+        checks.length
+          ? h('div', { style: { marginTop: 3 } },
+            checks.map((check, index) => h(PreflightRow, {
+              key: `${check.code || 'check'}-${index}`, check,
+            })))
+          : null);
+    }
+
+    function ConfirmDeploy({ host, retry = false, t, onCancel, onConfirm }) {
+      const [ack, setAck] = React.useState(false);
+      return h('div', {
+        style: {
+          marginTop: 10, padding: 10, borderRadius: 8,
+          border: '1px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 32%, var(--dsw-alias-border-l1))',
+          background: 'color-mix(in srgb, var(--dsw-alias-state-warn-primary) 7%, transparent)',
+        },
+      },
+      h('div', { style: { fontSize: 12, fontWeight: 600 } }, t('confirmTitle')),
+      h('div', {
+        style: {
+          marginTop: 4, fontSize: 11, lineHeight: '16px',
+          color: 'var(--dsw-alias-label-secondary)',
+        },
+      }, String(t('confirmBody')).replace('{host}', host || t('host'))),
+      h('label', {
+        style: {
+          display: 'flex', alignItems: 'flex-start', gap: 6,
+          marginTop: 8, fontSize: 11, lineHeight: '16px', cursor: 'pointer',
+        },
+      },
+      h('input', {
+        type: 'checkbox', checked: ack,
+        onChange: (event) => setAck(event.target.checked),
+        style: { marginTop: 2, accentColor: 'var(--dsw-alias-brand-primary)' },
+      }),
+      h('span', null, t('confirmAck'))),
+      h('div', {
+        style: { display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 8 },
+      },
+      h('button', {
+        type: 'button', className: 'ofu-btn', onClick: onCancel,
+        style: {
+          padding: '4px 9px', borderRadius: 6,
+          border: '1px solid var(--dsw-alias-border-l1)',
+          background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
+          fontSize: 11, cursor: 'pointer',
+        },
+      }, t('cancel')),
+      h('button', {
+        type: 'button', className: 'ofu-btn', onClick: onConfirm, disabled: !ack,
+        style: {
+          padding: '4px 9px', borderRadius: 6, border: 'none',
+          background: 'var(--dsw-alias-brand-primary)', color: '#fff',
+          fontSize: 11, fontWeight: 600,
+          cursor: ack ? 'pointer' : 'default', opacity: ack ? 1 : 0.55,
+        },
+      }, t(retry ? 'retryDeploy' : 'startDeploy'))));
+    }
+
+    function useElapsed(startedAt, finishedAt, active) {
+      const [now, setNow] = React.useState(() => Date.now());
+      React.useEffect(() => {
+        if (!active) return undefined;
+        setNow(Date.now());
+        const timer = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(timer);
+      }, [active, startedAt, finishedAt]);
+      if (!startedAt) return null;
+      const start = new Date(startedAt).getTime();
+      if (Number.isNaN(start)) return null;
+      const end = finishedAt ? new Date(finishedAt).getTime() : now;
+      return Math.max(0, (Number.isNaN(end) ? now : end) - start);
+    }
+
+    function PhaseLine({ environment, t }) {
+      const status = environment?.status || 'pending';
+      const active = status === 'bootstrapping' || status === 'waiting_console';
+      const failed = status === 'failed';
+      const cancelled = status === 'cancelled';
+      const elapsedMs = useElapsed(environment?.started_at, environment?.finished_at, active);
+      if (!active && !failed && !cancelled) return null;
+
+      const phase = environment?.phase || '';
+      const title = phaseTitle(phase, t)
+        || (failed ? t('deployFailed') : cancelled ? t('deployCancelled') : t('deploying'));
+      const index = phaseStep(phase);
+      const step = index
+        ? String(t('phaseStep'))
+          .replace('{index}', String(index))
+          .replace('{total}', String(PHASE_ORDER.length))
+        : '';
+      const elapsed = elapsedMs === null ? '' : `${t('elapsed')} ${formatElapsed(elapsedMs)}`;
+      const summary = active
+        ? [title, step, elapsed].filter(Boolean).join(' · ')
+        : `${failed
+          ? String(t('failedAtStage')).replace('{phase}', title)
+          : String(t('cancelledAtStage')).replace('{phase}', title)}${elapsed ? ` · ${elapsed}` : ''}`;
+      const color = failed
+        ? 'var(--dsw-alias-state-error-primary)'
+        : cancelled
+          ? 'var(--dsw-alias-label-secondary)'
+          : 'var(--dsw-alias-label-primary)';
+
+      return h('div', { style: { marginTop: 8 } },
+        h('div', {
+          style: {
+            display: 'flex', alignItems: 'center', gap: 7,
+            fontSize: 11.5, fontWeight: 600, color, overflowWrap: 'anywhere',
+          },
+        },
+        active ? h(Spinner, { size: 12 }) : null,
+        h('span', null, summary)),
+        active
+          ? h('div', {
+            style: {
+              marginTop: 3, fontSize: 10.5, lineHeight: '15px',
+              color: 'var(--dsw-alias-label-secondary)',
+            },
+          }, phase === 'preflight' ? t('stageHintPreflight') : t('stageHint'))
+          : null);
+    }
+
+    function LiveLog({ environment, active, failed, visible, t }) {
+      const environmentId = environment?.id || '';
+      const startedAt = environment?.started_at || '';
+      const [expanded, setExpanded] = React.useState(false);
+      const [log, setLog] = React.useState({ lines: [], error: null, ready: false, truncated: false });
+      const cursorRef = React.useRef(0);
+      const scrollRef = React.useRef(null);
+
+      React.useEffect(() => {
+        if (failed) setExpanded(true);
+      }, [failed]);
+
+      React.useEffect(() => {
+        if (!visible || !environmentId || (!active && !failed)) return undefined;
+        const controller = new AbortController();
+        let cancelled = false;
+        let timer = null;
+        let initialized = false;
+        cursorRef.current = 0;
+        setLog({ lines: [], error: null, ready: false, truncated: false });
+
+        const merge = (page, reset) => {
+          const incoming = Array.isArray(page?.lines) ? page.lines : [];
+          if (reset) {
+            setLog({
+              lines: incoming.slice(-300),
+              error: null,
+              ready: true,
+              truncated: Boolean(page?.truncated),
+            });
+            return;
+          }
+          if (incoming.length === 0) {
+            setLog((previous) => ({ ...previous, error: null, ready: true }));
+            return;
+          }
+          setLog((previous) => ({
+            lines: [...previous.lines, ...incoming].slice(-300),
+            error: null,
+            ready: true,
+            truncated: previous.truncated || Boolean(page?.truncated),
+          }));
+        };
+
+        const poll = async () => {
+          const reset = !initialized;
+          const page = reset
+            ? await loadLogTail(environmentId, controller.signal)
+            : await loadLogs(environmentId, cursorRef.current, controller.signal);
+          if (cancelled) return;
+          initialized = true;
+          const next = Number(page?.next_cursor);
+          if (Number.isFinite(next) && next >= 0) cursorRef.current = next;
+          merge(page, reset);
+        };
+
+        const fail = (error) => {
+          if (cancelled || error?.name === 'AbortError') return;
+          setLog((previous) => ({ ...previous, error }));
+        };
+
+        poll().catch(fail).finally(() => {
+          if (cancelled) return;
+          timer = setInterval(() => {
+            poll().catch(fail);
+          }, active ? 2000 : 15000);
+        });
+
+        return () => {
+          cancelled = true;
+          if (timer) clearInterval(timer);
+          controller.abort();
+        };
+      }, [visible, environmentId, startedAt, active, failed]);
+
+      React.useEffect(() => {
+        const node = scrollRef.current;
+        if (!expanded || !node) return;
+        node.scrollTop = node.scrollHeight;
+      }, [expanded, log.lines.length]);
+
+      const lines = log.lines;
+      let lastLine = '';
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const text = oneLineLog(lines[index]);
+        if (text) {
+          lastLine = text;
+          break;
+        }
+      }
+      const placeholder = log.error && lines.length === 0
+        ? t('logUnavailable')
+        : t('logWaiting');
+
+      return h('div', { style: { marginTop: 9 } },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+          h('span', {
+            style: {
+              width: 6, height: 6, borderRadius: '50%', flex: '0 0 auto',
+              background: failed
+                ? 'var(--dsw-alias-state-error-primary)'
+                : 'var(--dsw-alias-state-success-primary)',
+              animation: active ? 'ofu-pulse 1.4s ease-in-out infinite' : 'none',
+            },
+          }),
+          h('span', {
+            style: {
+              flex: '0 0 auto', fontSize: 10, fontWeight: 700, letterSpacing: '0.04em',
+              textTransform: 'uppercase', color: 'var(--dsw-alias-label-secondary)',
+            },
+          }, t('liveLogs')),
+          log.truncated
+            ? h('span', {
+              style: {
+                flex: '0 1 auto', minWidth: 0, fontSize: 9,
+                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                color: 'var(--dsw-alias-label-secondary)',
+              },
+            }, t('logTruncated'))
+            : null,
+          h('button', {
+            type: 'button', className: 'ofu-btn',
+            onClick: () => setExpanded((value) => !value),
+            style: {
+              flex: '0 0 auto', marginLeft: 'auto', padding: '1px 6px', borderRadius: 5,
+              border: '1px solid var(--dsw-alias-border-l1)',
+              background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
+              fontSize: 10, cursor: 'pointer',
+            },
+          }, expanded ? t('hideLogs') : t('showLogs'))),
+        expanded
+          ? h('div', {
+            ref: scrollRef,
+            className: 'ofu-log',
+            style: {
+              marginTop: 4, padding: '6px 8px', maxHeight: 148, overflowY: 'auto',
+              borderRadius: 7, border: '1px solid var(--dsw-alias-border-l1)',
+              background: 'var(--dsw-alias-bg-layer-2)',
+              fontFamily: 'var(--dsw-font-family-mono, ui-monospace, monospace)',
+              fontSize: 10, lineHeight: '15px',
+              whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+              color: 'var(--dsw-alias-label-secondary)',
+            },
+          },
+          lines.length
+            ? lines.map((line, index) => h('div', { key: index }, stripAnsi(line)))
+            : h('div', null, placeholder),
+          log.error && lines.length > 0
+            ? h('div', {
+              style: { marginTop: 3, color: 'var(--dsw-alias-state-warn-primary)' },
+            }, t('logRetrying'))
+            : null)
+          : h('div', {
+            style: {
+              marginTop: 3,
+              fontFamily: 'var(--dsw-font-family-mono, ui-monospace, monospace)',
+              fontSize: 10, color: 'var(--dsw-alias-label-secondary)',
+              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            },
+          }, lastLine || placeholder));
+    }
+
+    function DeploymentCard({ environment, preflight, action, allowDeploy, planning, visible, pollError, t, onRecheck, onDeploy, onCancel }) {
+      const [confirming, setConfirming] = React.useState(false);
+      const [cancelConfirming, setCancelConfirming] = React.useState(false);
+      const status = environment?.status || 'pending';
+      const active = status === 'bootstrapping' || status === 'waiting_console';
+      const ready = status === 'ready';
+      const failed = status === 'failed';
+      const cancelled = status === 'cancelled';
+      const canDeploy = allowDeploy !== false && Boolean(preflight?.ready) && !active && !ready;
+      const retry = failed || cancelled;
+      const host = environment?.host || preflight?.host || '';
+      const progress = Number(environment?.progress) || 0;
+      const tone = ready ? 'ready' : failed ? 'failed' : active ? 'bootstrapping' : 'pending';
+      const busy = ['rechecking', 'deploying', 'cancelling'].includes(action.phase);
+      const failure = action.error
+        ? {
+          code: action.error.code,
+          message: action.error.message || String(action.error),
+        }
+        : failed && environment?.error_message
+          ? {
+            code: environment.error_code,
+            message: environment.error_message,
+          }
+          : null;
+
+      React.useEffect(() => {
+        if (!canDeploy) setConfirming(false);
+      }, [canDeploy]);
+
+      React.useEffect(() => {
+        if (!active) setCancelConfirming(false);
+      }, [active]);
+
+      return h('div', {
+        style: {
+          marginTop: 12, padding: '10px 11px', borderRadius: 10,
+          border: '1px solid var(--dsw-alias-border-l1)',
+          background: 'var(--dsw-alias-bg-layer-1)',
+        },
+      },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+        h(ServerIcon, { size: 15 }),
+        h('div', { style: { flex: 1, minWidth: 0 } },
+          h('div', {
+            style: {
+              fontSize: 12.5, fontWeight: 650,
+              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+            },
+          }, host || t('host')),
+          h('div', {
+            style: {
+              marginTop: 1, fontSize: 10.5,
+              color: 'var(--dsw-alias-label-secondary)',
+            },
+          }, t('deployDescription'))),
+        h(StatusPill, {
+          value: status, label: deployStatusLabel(status, t), tone, pulse: active,
+        })),
+
+      h(PhaseLine, { environment, t }),
+
+      (active || failed || progress > 0)
+        ? h(Progress, { value: progress, active, failed })
+        : null,
+
+      action.phase === 'deploying'
+        ? h('div', {
+          style: {
+            display: 'flex', alignItems: 'center', gap: 6, marginTop: 7,
+            fontSize: 10.5, color: 'var(--dsw-alias-label-secondary)',
+          },
+        }, h(Spinner, { size: 10 }), t('startingDeploy'))
+        : null,
+
+      failure
+        ? h('div', {
+          style: {
+            marginTop: 8, padding: '7px 9px', borderRadius: 7,
+            border: '1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 30%, var(--dsw-alias-border-l1))',
+            background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 7%, transparent)',
+            fontSize: 11, lineHeight: '16px',
+            color: 'var(--dsw-alias-state-error-primary)', overflowWrap: 'anywhere',
+          },
+        },
+        h('div', { style: { fontWeight: 600 } }, failure.message),
+        failure.code
+          ? h('div', {
+            style: {
+              marginTop: 2, fontSize: 9.5, opacity: 0.8,
+              fontFamily: 'var(--dsw-font-family-mono, ui-monospace, monospace)',
+            },
+          }, failure.code)
+          : null)
+        : null,
+
+      (active || failed) && environment?.id
+        ? h(LiveLog, {
+          environment, active, failed, visible, t,
+        })
+        : null,
+
+      pollError
+        ? h('div', {
+          style: {
+            marginTop: 7, fontSize: 10.5,
+            color: 'var(--dsw-alias-state-warn-primary)',
+          },
+        }, t('pollFailed'))
+        : null,
+
+      h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 } },
+        h('button', {
+          type: 'button', className: 'ofu-btn',
+          onClick: onRecheck, disabled: busy || active,
+          style: {
+            padding: '4px 9px', borderRadius: 6,
+            border: '1px solid var(--dsw-alias-border-l1)',
+            background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
+            fontSize: 11, cursor: busy || active ? 'default' : 'pointer',
+          },
+        }, action.phase === 'rechecking' ? t('rechecking') : t('recheck')),
+        active
+          ? (cancelConfirming
+            ? null
+            : h('button', {
+              type: 'button', className: 'ofu-btn',
+              onClick: () => setCancelConfirming(true), disabled: busy,
+              style: {
+                padding: '4px 9px', borderRadius: 6,
+                border: '1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 40%, var(--dsw-alias-border-l1))',
+                background: 'transparent', color: 'var(--dsw-alias-state-error-primary)',
+                fontSize: 11, cursor: busy ? 'default' : 'pointer',
+              },
+            }, t('cancelDeploy')))
+          : canDeploy
+            ? h('button', {
+              type: 'button', className: 'ofu-btn',
+              onClick: () => setConfirming(true), disabled: busy,
+              style: {
+                padding: '4px 9px', borderRadius: 6, border: 'none',
+                background: 'var(--dsw-alias-brand-primary)', color: '#fff',
+                fontSize: 11, fontWeight: 600, cursor: busy ? 'default' : 'pointer',
+              },
+            }, t(retry ? 'retryDeploy' : 'confirmDeploy'))
+            : null),
+
+      active && cancelConfirming
+        ? h('div', {
+          style: {
+            marginTop: 8, padding: '8px 9px', borderRadius: 8,
+            border: '1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 30%, var(--dsw-alias-border-l1))',
+            background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 6%, transparent)',
+          },
+        },
+        h('div', { style: { fontSize: 11.5, fontWeight: 600 } }, t('cancelConfirmTitle')),
+        h('div', {
+          style: {
+            marginTop: 3, fontSize: 10.5, lineHeight: '15px',
+            color: 'var(--dsw-alias-label-secondary)',
+          },
+        }, t('cancelConfirmBody')),
+        h('div', {
+          style: { display: 'flex', justifyContent: 'flex-end', gap: 6, marginTop: 7 },
+        },
+        h('button', {
+          type: 'button', className: 'ofu-btn',
+          onClick: () => setCancelConfirming(false),
+          disabled: action.phase === 'cancelling',
+          style: {
+            padding: '4px 9px', borderRadius: 6,
+            border: '1px solid var(--dsw-alias-border-l1)',
+            background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
+            fontSize: 11, cursor: action.phase === 'cancelling' ? 'default' : 'pointer',
+          },
+        }, t('keepDeploying')),
+        h('button', {
+          type: 'button', className: 'ofu-btn',
+          onClick: onCancel, disabled: busy,
+          style: {
+            padding: '4px 9px', borderRadius: 6, border: 'none',
+            background: 'var(--dsw-alias-state-error-primary)', color: '#fff',
+            fontSize: 11, fontWeight: 600, opacity: busy ? 0.55 : 1,
+            cursor: busy ? 'default' : 'pointer',
+          },
+        }, action.phase === 'cancelling' ? t('cancelling') : t('confirmCancel'))))
+        : null,
+
+      confirming && canDeploy
+        ? h(ConfirmDeploy, {
+          host,
+          retry,
+          t,
+          onCancel: () => setConfirming(false),
+          onConfirm: () => { setConfirming(false); onDeploy(); },
+        })
+        : null,
+
+      h('div', { style: { marginTop: 10 } },
+        h('div', {
+          style: { display: 'flex', alignItems: 'center', gap: 8 },
+        },
+        h('div', {
+          style: {
+            fontSize: 11, fontWeight: 700, letterSpacing: '0.04em',
+            textTransform: 'uppercase', color: 'var(--dsw-alias-label-secondary)',
+          },
+        }, t('preflight')),
+        h('div', {
+          style: {
+            marginLeft: 'auto', fontSize: 10,
+            color: 'var(--dsw-alias-label-secondary)',
+          },
+        }, preflight?.checked_at ? `${t('checkedAt')} ${formatTime(preflight.checked_at)}` : '')),
+        planning && !preflight
+          ? h('div', {
+            style: {
+              padding: '8px 0 2px', fontSize: 11,
+              color: 'var(--dsw-alias-label-secondary)',
+            },
+          }, t('preflightLoading'))
+          : h(PreflightList, { report: preflight, t })));
+    }
+
     function EnvironmentCard({ env, t }) {
       return h('div', {
         style: {
@@ -658,9 +1335,16 @@ window.__ModuleLoader__.load({
       const t = (key) => text(props.ctx, key);
       const [state, setState] = React.useState({ phase: 'loading', data: null, error: null });
       const [requestId, setRequestId] = React.useState(0);
+      const [planState, setPlanState] = React.useState({ phase: 'idle', data: null, error: null });
+      const [planRequestId, setPlanRequestId] = React.useState(0);
+      const [action, setAction] = React.useState({ phase: 'idle', error: null });
       const [lastPolledAt, setLastPolledAt] = React.useState(null);
+      const [pollError, setPollError] = React.useState(false);
       const visible = props.visible !== false;
       const requestRef = React.useRef(0);
+      const planRequestRef = React.useRef(0);
+      const pollFailures = React.useRef(0);
+      // The two environment pollers below are mutually exclusive by status.
       // One latch keeps a slow backend (30 s timeout) from stacking ticks.
       const pollInFlight = React.useRef(false);
 
@@ -676,6 +1360,8 @@ window.__ModuleLoader__.load({
         }));
         loadPanel(controller.signal).then((data) => {
           if (controller.signal.aborted || requestRef.current !== current) return;
+          pollFailures.current = 0;
+          setPollError(false);
           setLastPolledAt(data?.refreshedAt || new Date().toISOString());
           setState({ phase: 'ready', data, error: null });
         }).catch((error) => {
@@ -688,6 +1374,69 @@ window.__ModuleLoader__.load({
 
       const environmentStatus = state.data?.environments?.[0]?.status;
       const environmentId = state.data?.environments?.[0]?.id;
+
+      React.useEffect(() => {
+        if (!visible || !state.data) return undefined;
+        if (environmentStatus === 'ready'
+          || environmentStatus === 'bootstrapping'
+          || environmentStatus === 'waiting_console') {
+          return undefined;
+        }
+        const controller = new AbortController();
+        planRequestRef.current += 1;
+        const current = planRequestRef.current;
+        setPlanState((previous) => ({
+          phase: previous.data ? 'refreshing' : 'loading',
+          data: previous.data,
+          error: null,
+        }));
+        loadPlan(controller.signal).then((payload) => {
+          if (controller.signal.aborted || planRequestRef.current !== current) return;
+          setPlanState({ phase: 'ready', data: payload, error: null });
+        }).catch((error) => {
+          if (controller.signal.aborted || error?.name === 'AbortError') return;
+          if (planRequestRef.current !== current) return;
+          setPlanState((previous) => ({ phase: 'error', data: previous.data, error }));
+        });
+        return () => controller.abort();
+      }, [visible, state.data?.refreshedAt, environmentStatus, planRequestId]);
+
+      React.useEffect(() => {
+        if (!visible) return undefined;
+        if (environmentStatus !== 'bootstrapping' && environmentStatus !== 'waiting_console') {
+          return undefined;
+        }
+        const controller = new AbortController();
+        const timer = setInterval(() => {
+          if (pollInFlight.current) return;
+          pollInFlight.current = true;
+          loadEnvironments(controller.signal).then((payload) => {
+            const environments = Array.isArray(payload.environments) ? payload.environments : [];
+            pollFailures.current = 0;
+            setPollError(false);
+            setLastPolledAt(payload.refreshedAt || new Date().toISOString());
+            setState((previous) => (previous.data
+              ? { ...previous, data: { ...previous.data, environments } }
+              : previous));
+            setPlanState((previous) => (previous.data
+              ? { ...previous, data: { ...previous.data, environment: environments[0] || previous.data.environment } }
+              : previous));
+            const nextStatus = environments[0]?.status;
+            if (nextStatus !== 'bootstrapping' && nextStatus !== 'waiting_console') {
+              setRequestId((value) => value + 1);
+            }
+          }).catch(() => {
+            pollFailures.current += 1;
+            if (pollFailures.current >= 3) setPollError(true);
+          }).finally(() => {
+            pollInFlight.current = false;
+          });
+        }, 2000);
+        return () => {
+          clearInterval(timer);
+          controller.abort();
+        };
+      }, [visible, environmentStatus, environmentId]);
 
       const hasData = Boolean(state.data);
 
@@ -704,13 +1453,15 @@ window.__ModuleLoader__.load({
           pollInFlight.current = true;
           loadEnvironments(controller.signal).then((payload) => {
             const environments = Array.isArray(payload.environments) ? payload.environments : [];
+            pollFailures.current = 0;
+            setPollError(false);
             setLastPolledAt(payload.refreshedAt || new Date().toISOString());
             setState((previous) => (previous.data
               ? { ...previous, data: { ...previous.data, environments } }
               : previous));
           }).catch(() => {
-            // A failed poll keeps the last known state on screen and the
-            // next tick retries.
+            pollFailures.current += 1;
+            if (pollFailures.current >= 3) setPollError(true);
           }).finally(() => {
             pollInFlight.current = false;
           });
@@ -727,8 +1478,141 @@ window.__ModuleLoader__.load({
 
       const environment = Array.isArray(data?.environments)
         ? data.environments[0]
-        : null;
+        : (planState.data?.environment || null);
+      const preflight = planState.data?.preflight || environment?.preflight || null;
+      const plan = Array.isArray(planState.data?.plan) ? planState.data.plan : [];
       const ready = environment?.status === 'ready';
+      const needsSetup = !ready;
+
+      const replaceEnvironment = (next) => {
+        if (!next) return;
+        setState((previous) => (previous.data
+          ? {
+            ...previous,
+            data: {
+              ...previous.data,
+              environments: [
+                next,
+                ...previous.data.environments.filter((item) => item.id !== next.id),
+              ],
+            },
+          }
+          : previous));
+      };
+
+      const recheck = async () => {
+        setAction({ phase: 'rechecking', error: null });
+        try {
+          if (environment?.id
+            && environment.status !== 'ready'
+            && environment.status !== 'bootstrapping'
+            && environment.status !== 'waiting_console') {
+            let payload;
+            try {
+              payload = await postJson('openfuyao/api/preflight', {
+                environment_id: environment.id,
+              });
+            } catch (error) {
+              if (!isRouteUnavailable(error)) throw error;
+              if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+                console.warn(
+                  'openFuyao: recheck POST route is unavailable; falling back to the plan route',
+                  error,
+                );
+              }
+              // Older Host bundles only expose the read-only plan route (the
+              // one that already rendered the checklist). Rechecking must still
+              // refresh the report instead of pinning "HTTP 405" under the
+              // button, so run the same dry-run plan through the GET route.
+              payload = await loadPlan();
+            }
+            setPlanState((previous) => ({
+              phase: 'ready',
+              data: {
+                ...(previous.data || {}),
+                ...payload,
+                environment: payload.environment || environment,
+                preflight: payload.preflight || payload.environment?.preflight || null,
+                // A recheck reports no plan (the stored plan is unchanged), so
+                // keep the previous steps instead of blanking the list.
+                plan: Array.isArray(payload.plan) && payload.plan.length > 0
+                  ? payload.plan
+                  : (previous.data?.plan || []),
+              },
+              error: null,
+            }));
+            replaceEnvironment(payload.environment);
+          } else {
+            const payload = await loadPlan();
+            setPlanState({ phase: 'ready', data: payload, error: null });
+            replaceEnvironment(payload.environment);
+          }
+          setAction({ phase: 'idle', error: null });
+          setRequestId((value) => value + 1);
+        } catch (error) {
+          setAction({ phase: 'error', error });
+        }
+      };
+
+      const deploy = async () => {
+        const host = environment?.host || preflight?.host || '';
+        setAction({ phase: 'deploying', error: null });
+        try {
+          const result = await postJson('openfuyao/api/deploy', { confirm: true, host });
+          const next = result.environment || environment;
+          setPlanState((previous) => ({
+            phase: 'ready',
+            data: {
+              ...(previous.data || {}),
+              environment: next,
+              preflight: result.preflight || previous.data?.preflight || preflight,
+              plan: Array.isArray(result.plan) ? result.plan : (previous.data?.plan || plan),
+            },
+            error: null,
+          }));
+          replaceEnvironment(next);
+          setAction({ phase: 'idle', error: null });
+          setRequestId((value) => value + 1);
+        } catch (error) {
+          if (error.details?.preflight) {
+            setPlanState((previous) => ({
+              phase: 'ready',
+              data: {
+                ...(previous.data || {}),
+                environment: error.details.environment || previous.data?.environment || environment,
+                preflight: error.details.preflight,
+                plan: Array.isArray(error.details.plan) ? error.details.plan : (previous.data?.plan || plan),
+              },
+              error: null,
+            }));
+          }
+          setAction({ phase: 'error', error });
+        }
+      };
+
+      const cancelDeploy = async () => {
+        if (!environment?.id) return;
+        setAction({ phase: 'cancelling', error: null });
+        try {
+          const result = await postJson('openfuyao/api/cancel', {
+            target: 'environment',
+            id: environment.id,
+          });
+          setPlanState((previous) => ({
+            phase: 'ready',
+            data: {
+              ...(previous.data || {}),
+              environment: result.environment || environment,
+            },
+            error: null,
+          }));
+          replaceEnvironment(result.environment);
+          setAction({ phase: 'idle', error: null });
+          setRequestId((value) => value + 1);
+        } catch (error) {
+          setAction({ phase: 'error', error });
+        }
+      };
 
       const body = (() => {
         if (!data && state.phase === 'loading') return h(Loading, { t });
@@ -769,7 +1653,21 @@ window.__ModuleLoader__.load({
               ? h(LinkButton, { href: data.console.url, label: t('openConsole'), compact: true })
               : null)
             : null,
-          h('div', {
+          needsSetup
+            ? h(DeploymentCard, {
+              environment,
+              preflight,
+              action,
+              allowDeploy: data.panelDeploy !== false,
+              planning: planState.phase === 'loading' || planState.phase === 'refreshing',
+              visible,
+              pollError,
+              t,
+              onRecheck: recheck,
+              onDeploy: deploy,
+              onCancel: cancelDeploy,
+            })
+            : h('div', {
               style: {
                 display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
                 gap: 8, marginTop: 12,
