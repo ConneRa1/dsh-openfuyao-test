@@ -1,0 +1,33 @@
+name: DSH plugin tests
+
+# The dsh-plugin bundle is plain ESM with no dependencies, so its tests run on
+# bare Node: `node --test`. Nothing else in the pipeline covers dsh-plugin/ —
+# lint.yml and ui-*.yml only look at frontend/ and src/.
+
+on:
+  push:
+    paths:
+      - 'dsh-plugin/**'
+      - '.github/workflows/dsh-plugin-tests.yml'
+  pull_request:
+    paths:
+      - 'dsh-plugin/**'
+      - '.github/workflows/dsh-plugin-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node-tests:
+    name: Node tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run the plugin tests
+        run: node --test dsh-plugin/test/*.test.mjs

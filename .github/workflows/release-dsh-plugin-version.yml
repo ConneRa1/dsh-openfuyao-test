@@ -1,0 +1,75 @@
+name: Release DSH plugin (version)
+
+# Decides the next plugin version and tags it. The tag triggers
+# release-dsh-plugin.yml, which builds the sidecars and publishes the packages.
+#
+# Why a manual trigger by default:
+#
+#   * master is force-synced from GitCode by release.yml (`git reset --hard
+#     gitcode/master`), so any commit this workflow created would be wiped on
+#     the next sync. The tag is created on the current HEAD instead, and the
+#     version is pinned inside the publish workflow — the same shape the Python
+#     release already uses for pyproject.toml.
+#   * the bump is derived from conventional commits that touch `dsh-plugin/`
+#     only (scripts/dsh-plugin-version.mjs), so a `feat:` on the Python side
+#     never bumps the plugin.
+#
+# To make it fully automatic, add under `on:`:
+#
+#   push:
+#     branches: [master]
+#     paths: ['dsh-plugin/**']
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '仅计算版本，不创建 tag'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    name: Compute version and tag
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Compute next version
+        id: next
+        run: |
+          NEXT="$(node scripts/dsh-plugin-version.mjs print)"
+          echo "next=$NEXT" >> "$GITHUB_OUTPUT"
+          if [[ "$NEXT" == "none" ]]; then
+            echo "::notice::dsh-plugin/ 自上一个 tag 以来没有影响版本的提交，不发布"
+          else
+            echo "::notice::下一个版本：dsh-openfuyao-v$NEXT"
+          fi
+
+      - name: Create and push tag
+        if: steps.next.outputs.next != 'none' && inputs.dry_run != true
+        env:
+          NEXT: ${{ steps.next.outputs.next }}
+        run: |
+          TAG="dsh-openfuyao-v${NEXT}"
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "tag 已存在：${TAG}。版本号计算有误，或该版本已发布。" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Annotated tag on the current HEAD, deliberately without a version
+          # commit — see the header comment.
+          git tag -a "$TAG" -m "DSH openFuyao plugin ${NEXT}"
+          git push origin "$TAG"

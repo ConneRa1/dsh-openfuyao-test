@@ -1,0 +1,231 @@
+name: Release DSH openFuyao plugin
+
+# Publishes the four npm packages that make up the DSH plugin:
+#
+#   @openwitty/dsh-openfuyao                       Host tools, approval gate, Host routes
+#   @openwitty/dsh-openfuyao-panel                 right-sidebar UI (client bundle)
+#   @openwitty/dsh-openfuyao-sidecar-linux-x64     prebuilt sidecar
+#   @openwitty/dsh-openfuyao-sidecar-linux-arm64   prebuilt sidecar
+#
+# The sidecar ships as separate platform packages because one npm version can
+# only be published once: two architectures cannot share a single tarball. The
+# Host package pulls the matching one in through `optionalDependencies`, whose
+# `os` / `cpu` fields make the package manager skip the other.
+#
+# Publish order is a hard constraint: platform packages first, Host last. npm
+# treats a failed *optional* dependency as a warning, so a Host published too
+# early would install "successfully" and only fail later with a missing binary.
+#
+# Triggered by a `dsh-openfuyao-v<version>` tag. Tags are created by
+# release-dsh-plugin-version.yml and point at a normal master commit — the
+# version in package.json is pinned inside this workflow, not committed.
+
+on:
+  push:
+    tags:
+      - 'dsh-openfuyao-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish, without the tag prefix (e.g. 1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  # GitHub-hosted arm64 runners run PyInstaller natively. Do not replace this
+  # with QEMU: the onedir build is slow and fails intermittently under emulation.
+  NODE_VERSION: '20'
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Resolve
+        id: resolve
+        env:
+          # Never interpolate the event payload straight into the script: a
+          # dispatch input is attacker-controlled text, not shell syntax.
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="${REF_NAME#dsh-openfuyao-v}"
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "无法解析版本号：'$VERSION'（触发：$EVENT_NAME）" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "版本：$VERSION"
+
+  sidecar:
+    name: Sidecar (${{ matrix.platform }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x64
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+    env:
+      PYTHON: python3
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . 'pyinstaller>=6.10'
+
+      - name: Build sidecar
+        run: ./scripts/build-sidecar.sh
+
+      - name: Pin plugin version
+        run: node scripts/dsh-plugin-version.mjs set "$VERSION"
+
+      - name: Stage platform package
+        run: |
+          node scripts/make-sidecar-package.mjs \
+            --dist build/sidecar-dist/witty-openfuyao-sidecar \
+            --platform "${{ matrix.platform }}" \
+            --version "$VERSION" \
+            --out "build/npm-pkg/${{ matrix.platform }}"
+
+      # Offline channel: the self-contained tarball keeps the binary inside the
+      # bundle, so `#resolveBinary()` finds it at <pkg>/sidecar/ without npm.
+      # Built before publishing so a broken archive does not leave a package on
+      # the registry that cannot be taken back.
+      - name: Stage sidecar into the bundle
+        run: |
+          rm -rf dsh-plugin/sidecar
+          mkdir -p dsh-plugin/sidecar
+          cp -a build/sidecar-dist/witty-openfuyao-sidecar/. dsh-plugin/sidecar/
+
+      - name: Build self-contained tarball
+        run: ./scripts/package-dsh-plugin.sh
+
+      - name: Publish platform package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish "build/npm-pkg/${{ matrix.platform }}" --access public
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball-${{ matrix.platform }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  npm:
+    name: Publish Host and panel
+    needs: [version, sidecar]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://registry.npmjs.org
+
+      - name: Pin plugin version
+        run: node scripts/dsh-plugin-version.mjs set "$VERSION"
+
+      # Everything is verified before the first publish. npm does not retract, so
+      # a failure after `npm publish ./dsh-plugin/panel` would leave a version
+      # behind that cannot be released again.
+      - name: Verify optional dependencies are pinned to this version
+        run: |
+          node -e '
+            const host = require("./dsh-plugin/package.json");
+            const expected = process.env.VERSION;
+            const pins = Object.entries(host.optionalDependencies ?? {});
+            if (pins.length === 0) {
+              console.error("optionalDependencies 为空：平台二进制不会被安装");
+              process.exit(1);
+            }
+            let failed = false;
+            for (const [name, range] of pins) {
+              if (range !== expected) {
+                console.error(`${name} 钉在 "${range}"，应为 "${expected}"`);
+                failed = true;
+              }
+            }
+            if (failed) process.exit(1);
+            console.error(`已校验 ${pins.length} 个平台包版本`);
+          '
+
+      # A failed *optional* dependency is only a warning for npm, so the Host
+      # would install "successfully" and fail later with SIDECAR_BINARY_MISSING.
+      - name: Verify the platform packages are published
+        run: |
+          for pkg in \
+            @openwitty/dsh-openfuyao-sidecar-linux-x64 \
+            @openwitty/dsh-openfuyao-sidecar-linux-arm64; do
+            if ! npm view "${pkg}@${VERSION}" version >/dev/null 2>&1; then
+              echo "平台包尚未发布：${pkg}@${VERSION}" >&2
+              exit 1
+            fi
+            echo "已找到 ${pkg}@${VERSION}"
+          done
+
+      - name: Run the plugin tests
+        run: npm test --prefix dsh-plugin
+
+      - name: Publish panel
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish ./dsh-plugin/panel --access public
+
+      - name: Publish Host
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish ./dsh-plugin --access public
+
+  release:
+    name: Attach offline tarballs
+    needs: [version, sidecar]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tarball-*
+          merge-multiple: true
+          path: release
+
+      - name: Upload to the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --verify-tag \
+                 --title "DSH openFuyao plugin ${TAG#dsh-openfuyao-v}" \
+                 --notes "npm: \`@openwitty/dsh-openfuyao@${TAG#dsh-openfuyao-v}\`"
+          gh release upload "$TAG" release/* --clobber
