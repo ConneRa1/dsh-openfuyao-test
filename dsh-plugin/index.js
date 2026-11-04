@@ -7,6 +7,7 @@
 
 import { createBackend } from './lib/backend.js';
 import { resolveConfig } from './lib/config.js';
+import { registerPanel } from './lib/panel.js';
 import { MUTATING_TOOLS, registerTools } from './lib/tools.js';
 
 export const name = 'dsh-openfuyao';
@@ -46,6 +47,7 @@ export function apply(ctx, config) {
   });
 
   registerTools(ctx, backend, resolved);
+  registerPanel(ctx, backend, resolved);
 }
 
 /** @param {unknown} args */
