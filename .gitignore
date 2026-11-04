@@ -283,3 +283,10 @@ build/
 # 渠道凭据目录（若把 WITTY_CHANNEL_CREDENTIALS_DIR 指到仓库内，绝不入库）
 /channel-credentials/
 /data/channel-credentials/
+
+# DSH openFuyao plugin: build artifacts (rebuild with scripts/build-sidecar.sh)
+/dsh-plugin/sidecar/
+
+# The PyInstaller spec is source, not a build artifact: un-ignore it despite the
+# global `*.spec` rule above.
+!scripts/*.spec
