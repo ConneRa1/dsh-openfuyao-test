@@ -1,0 +1,46 @@
+{
+  "name": "@openwitty/dsh-openfuyao",
+  "version": "0.1.0",
+  "description": "openFuyao deployment tools for DeepSeek Harness, with a bundled headless sidecar.",
+  "type": "module",
+  "license": "MIT",
+  "icon": "icon.svg",
+  "engines": {
+    "node": ">=20",
+    "dsh": "^0.2.1-rc.2"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openwitty/witty-service.git",
+    "directory": "dsh-plugin"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "optionalDependencies": {
+    "@openwitty/dsh-openfuyao-sidecar-linux-x64": "0.1.0",
+    "@openwitty/dsh-openfuyao-sidecar-linux-arm64": "0.1.0"
+  },
+  "files": [
+    "index.js",
+    "lib/*.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ]
+}
