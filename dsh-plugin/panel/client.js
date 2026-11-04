@@ -1331,6 +1331,286 @@ window.__ModuleLoader__.load({
         : null);
     }
 
+    function sessionIdOf(props) {
+      const direct = props?.scope?.sessionId ?? props?.sessionId;
+      return typeof direct === 'string' ? direct : '';
+    }
+
+    /**
+     * Append a prompt to the current session's composer draft. DSH exposes the
+     * per-session input facade through `ctx.conversation`; `ctx.sessions.scope`
+     * turns the session id into the scoped context that facade expects. This is
+     * the same path dsh-better-sidebar uses for its "insert reference" action,
+     * so the panel does not have to emulate typing into the Lexical editor.
+     */
+    function insertPrompt(ctx, sessionId, prompt) {
+      try {
+        if (!ctx || !sessionId || typeof ctx.get !== 'function') return false;
+        const sessions = ctx.get('sessions');
+        const conversation = ctx.get('conversation');
+        if (!sessions || !conversation?.input || typeof sessions.scope !== 'function') return false;
+        const actx = sessions.scope(sessionId);
+        if (!actx) return false;
+        const input = conversation.input.for(actx);
+        if (!input || typeof input.setDraft !== 'function') return false;
+        const current = String(input.state?.getSnapshot?.().draft ?? '');
+        const next = current.trim()
+          ? `${current.replace(/\s+$/, '')}\n\n${prompt}`
+          : prompt;
+        input.setDraft(next);
+        if (typeof input.focus === 'function') input.focus();
+        return true;
+      } catch (error) {
+        console.warn('[openfuyao] composer insert failed:', error);
+        return false;
+      }
+    }
+
+    function oneLine(value) {
+      return String(value ?? '').replace(/\s+/g, ' ').trim();
+    }
+
+    function stateSummary(data) {
+      const environments = Array.isArray(data?.environments) ? data.environments : [];
+      const clusters = Array.isArray(data?.clusters) ? data.clusters : [];
+      const apps = Array.isArray(data?.apps) ? data.apps : [];
+      const issues = Array.isArray(data?.issues) ? data.issues : [];
+      const errors = Array.isArray(data?.errors) ? data.errors : [];
+      const envText = environments.length
+        ? environments.map((env) => {
+          const bits = [env.host || env.id, env.status, env.phase];
+          if (typeof env.progress === 'number') bits.push(`${env.progress}%`);
+          if (env.error_message) bits.push(`error=${oneLine(env.error_message)}`);
+          return bits.filter(Boolean).join(' ');
+        }).join('; ')
+        : 'none';
+      const clusterText = clusters.length
+        ? clusters.map((cluster) => {
+          const nodes = Array.isArray(cluster.nodes) ? cluster.nodes : [];
+          const ready = nodes.filter((node) => String(node?.status || '').toLowerCase() === 'ready').length;
+          const total = nodes.length || Number(cluster.expected_node_count) || 0;
+          const bits = [cluster.name || cluster.id, cluster.status, cluster.endpoint];
+          if (total > 0) bits.push(`nodes=${ready}/${total}`);
+          return bits.filter(Boolean).join(' ');
+        }).join('; ')
+        : 'none';
+      const appText = apps.length
+        ? apps.map((app) => [app.release_name || app.id, app.namespace, app.status, app.verify_url]
+          .filter(Boolean).join(' ')).join('; ')
+        : 'none';
+      const issueText = issues.length
+        ? issues.slice(0, 10).map((issue) => `${issue.title || issue.code} (${issue.code}/${issue.severity})`).join('; ')
+        : 'none';
+      const errorText = errors.length
+        ? errors.slice(0, 5).map((message) => oneLine(message)).join('; ')
+        : 'none';
+      return {
+        envText, clusterText, appText, issueText, errorText,
+        issueCount: issues.length,
+        errorCount: errors.length,
+      };
+    }
+
+    function promptHeader(data, locale) {
+      const zh = String(locale || '').toLowerCase().startsWith('zh');
+      const summary = stateSummary(data);
+      return {
+        zh,
+        refreshedAt: data?.refreshedAt || '',
+        mode: data?.transport?.mode || '',
+        ...summary,
+      };
+    }
+
+    function buildIssuePrompt(issue, data, locale) {
+      const info = promptHeader(data, locale);
+      const resource = issue.resource_name || issue.resource_id || (info.zh ? '未指定' : 'unspecified');
+      if (info.zh) {
+        return [
+          '请帮我诊断下面这个 openFuyao 问题，并在执行任何变更前先向我确认。',
+          '',
+          `问题：${oneLine(issue.title) || issue.code || '未知问题'}`,
+          `代码：${issue.code || '—'} · 级别：${issue.severity || '—'} · 来源：${issue.source || '—'}`,
+          `资源：${resource}`,
+          `说明：${oneLine(issue.message) || '无'}`,
+          `已有建议：${oneLine(issue.remediation) || '无'}`,
+          '',
+          `当前状态（采集于 ${info.refreshedAt || '刚刚'}，传输：${info.mode || '未知'}）：`,
+          `- 环境：${info.envText}`,
+          `- 业务集群：${info.clusterText}`,
+          `- 应用：${info.appText}`,
+          `- 全部问题：${info.issueText}`,
+          `- 观察错误：${info.errorText}`,
+          '',
+          '请先调用 openfuyao_status / openfuyao_environments / openfuyao_logs 复核事实，然后给出：',
+          '1. 现象与根因判断；',
+          '2. 影响面；',
+          '3. 排查/修复步骤；',
+          '4. 如需变更，说明准备调用哪个 openfuyao_* 工具、参数是什么，并等我确认后再执行。',
+        ].join('\n');
+      }
+      return [
+        'Help me diagnose the following openFuyao issue. Ask for confirmation before any change.',
+        '',
+        `Issue: ${oneLine(issue.title) || issue.code || 'unknown issue'}`,
+        `Code: ${issue.code || '—'} · Severity: ${issue.severity || '—'} · Source: ${issue.source || '—'}`,
+        `Resource: ${resource}`,
+        `Details: ${oneLine(issue.message) || 'none'}`,
+        `Existing recommendation: ${oneLine(issue.remediation) || 'none'}`,
+        '',
+        `Current state (observed ${info.refreshedAt || 'just now'}, transport: ${info.mode || 'unknown'}):`,
+        `- Environment: ${info.envText}`,
+        `- Business clusters: ${info.clusterText}`,
+        `- Applications: ${info.appText}`,
+        `- All issues: ${info.issueText}`,
+        `- Observation errors: ${info.errorText}`,
+        '',
+        'First verify the facts through openfuyao_status / openfuyao_environments / openfuyao_logs, then provide:',
+        '1. symptoms and likely root cause;',
+        '2. blast radius;',
+        '3. investigation/remediation steps;',
+        '4. if a change is needed, name the openfuyao_* tool and arguments and wait for my confirmation before executing.',
+      ].join('\n');
+    }
+
+    function buildAllIssuesPrompt(data, locale) {
+      const info = promptHeader(data, locale);
+      const issues = Array.isArray(data?.issues) ? data.issues : [];
+      if (info.zh) {
+        return [
+          '请帮我分析当前 openFuyao 的全部问题，并在执行任何变更前先向我确认。',
+          '',
+          `采集时间：${info.refreshedAt || '刚刚'}；传输：${info.mode || '未知'}；问题数：${info.issueCount}`,
+          `环境：${info.envText}`,
+          `业务集群：${info.clusterText}`,
+          `应用：${info.appText}`,
+          `观察错误：${info.errorText}`,
+          '',
+          '问题列表：',
+          ...(issues.length
+            ? issues.map((issue, index) => `${index + 1}. ${oneLine(issue.title) || issue.code}（${issue.code}/${issue.severity}，${issue.source}）${issue.message ? `：${oneLine(issue.message)}` : ''}`)
+            : ['（无）']),
+          '',
+          '请先调用 openfuyao_status / openfuyao_environments / openfuyao_logs 复核事实，然后按严重程度排序，给出：',
+          '1. 每个问题的根因判断与影响面；',
+          '2. 建议的处理顺序；',
+          '3. 需要变更时准备调用哪个 openfuyao_* 工具、参数是什么，并等我确认后再执行。',
+        ].join('\n');
+      }
+      return [
+        'Help me analyze all current openFuyao issues. Ask for confirmation before any change.',
+        '',
+        `Observed: ${info.refreshedAt || 'just now'}; transport: ${info.mode || 'unknown'}; issues: ${info.issueCount}`,
+        `Environment: ${info.envText}`,
+        `Business clusters: ${info.clusterText}`,
+        `Applications: ${info.appText}`,
+        `Observation errors: ${info.errorText}`,
+        '',
+        'Issues:',
+        ...(issues.length
+          ? issues.map((issue, index) => `${index + 1}. ${oneLine(issue.title) || issue.code} (${issue.code}/${issue.severity}, ${issue.source})${issue.message ? `: ${oneLine(issue.message)}` : ''}`)
+          : ['(none)']),
+        '',
+        'First verify the facts through openfuyao_status / openfuyao_environments / openfuyao_logs, then order the issues by severity and provide:',
+        '1. root cause and blast radius for each issue;',
+        '2. the recommended remediation order;',
+        '3. if a change is needed, name the openfuyao_* tool and arguments and wait for my confirmation before executing.',
+      ].join('\n');
+    }
+
+    function buildErrorMessagePrompt(message, data, locale) {
+      return buildIssuePrompt({
+        code: 'OVERVIEW_ERROR',
+        severity: 'warn',
+        source: 'overview',
+        title: oneLine(message) || 'openFuyao observation error',
+        message: String(message ?? ''),
+        remediation: '',
+      }, data, locale);
+    }
+
+    function AskButton({ label, title, disabled, asked, onClick }) {
+      return h('button', {
+        type: 'button', className: 'ofu-btn', onClick, disabled,
+        title: disabled ? title : label,
+        'aria-label': title || label,
+        style: {
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          padding: '3px 7px', borderRadius: 6,
+          border: '1px solid var(--dsw-alias-border-l1)',
+          background: asked ? 'color-mix(in srgb, var(--dsw-alias-brand-primary) 10%, transparent)' : 'transparent',
+          color: asked ? 'var(--dsw-alias-brand-primary)' : 'var(--dsw-alias-label-secondary)',
+          fontSize: 10.5, fontWeight: 500,
+          cursor: disabled ? 'default' : 'pointer',
+          opacity: disabled ? 0.5 : 1,
+          flex: '0 0 auto',
+        },
+      }, asked ? '✓ ' : '', label);
+    }
+
+    function IssueRow({ issue, t, canAsk, asked, onAsk }) {
+      const color = statusColor(issue.severity);
+      return h('div', {
+        style: {
+          padding: '8px 10px', borderRadius: 8,
+          border: `1px solid color-mix(in srgb, ${color} 28%, var(--dsw-alias-border-l1))`,
+          background: `color-mix(in srgb, ${color} 6%, transparent)`,
+        },
+      },
+      h('div', {
+        style: { display: 'flex', alignItems: 'center', gap: 7, fontSize: 11.5, fontWeight: 600 },
+      },
+      h('span', {
+        style: { width: 6, height: 6, borderRadius: '50%', background: color, flex: '0 0 auto' },
+      }),
+      h('span', { style: { flex: 1, minWidth: 0 } }, issue.title || issue.code || issue.id)),
+      issue.message
+        ? h('div', {
+          style: {
+            marginTop: 4, fontSize: 11, lineHeight: '16px',
+            color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere',
+          },
+        }, issue.message)
+        : null,
+      issue.remediation
+        ? h('div', {
+          style: {
+            marginTop: 4, fontSize: 10.5, lineHeight: '15px',
+            color: 'var(--dsw-alias-label-secondary)', opacity: 0.9,
+          },
+        }, issue.remediation)
+        : null,
+      h('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: 6 } },
+        h(AskButton, {
+          label: asked ? t('askedDsh') : t('askDsh'),
+          title: canAsk ? t('askDsh') : t('askNoSession'),
+          disabled: !canAsk,
+          asked,
+          onClick: onAsk,
+        })));
+    }
+
+    function ErrorRow({ message, t, canAsk, asked, onAsk }) {
+      return h('div', {
+        style: {
+          padding: '7px 9px', borderRadius: 7,
+          border: '1px solid var(--dsw-alias-border-l1)',
+          background: 'var(--dsw-alias-bg-layer-1)',
+          fontSize: 11, lineHeight: '16px',
+          color: 'var(--dsw-alias-label-secondary)', overflowWrap: 'anywhere',
+        },
+      },
+      h('div', null, message),
+      h('div', { style: { display: 'flex', justifyContent: 'flex-end', marginTop: 5 } },
+        h(AskButton, {
+          label: asked ? t('askedDsh') : t('askDsh'),
+          title: canAsk ? t('askDsh') : t('askNoSession'),
+          disabled: !canAsk,
+          asked,
+          onClick: onAsk,
+        })));
+    }
+
     function Panel(props) {
       const t = (key) => text(props.ctx, key);
       const [state, setState] = React.useState({ phase: 'loading', data: null, error: null });
@@ -1340,6 +1620,8 @@ window.__ModuleLoader__.load({
       const [action, setAction] = React.useState({ phase: 'idle', error: null });
       const [lastPolledAt, setLastPolledAt] = React.useState(null);
       const [pollError, setPollError] = React.useState(false);
+      const [asked, setAsked] = React.useState({});
+      const [askError, setAskError] = React.useState(null);
       const visible = props.visible !== false;
       const requestRef = React.useRef(0);
       const planRequestRef = React.useRef(0);
@@ -1347,6 +1629,7 @@ window.__ModuleLoader__.load({
       // The two environment pollers below are mutually exclusive by status.
       // One latch keeps a slow backend (30 s timeout) from stacking ticks.
       const pollInFlight = React.useRef(false);
+      const sessionId = sessionIdOf(props);
 
       React.useEffect(() => {
         if (!visible) return undefined;
@@ -1475,6 +1758,16 @@ window.__ModuleLoader__.load({
       const loading = state.phase === 'loading' || state.phase === 'refreshing';
       const data = state.data;
       const refresh = () => setRequestId((value) => value + 1);
+      const locale = props.ctx?.locale?.getSnapshot?.().active ?? '';
+      const ask = (key, prompt) => {
+        const ok = insertPrompt(props.ctx, sessionId, prompt);
+        if (ok) {
+          setAsked((previous) => ({ ...previous, [key]: true }));
+          setAskError(null);
+        } else {
+          setAskError(t('askFailed'));
+        }
+      };
 
       const environment = Array.isArray(data?.environments)
         ? data.environments[0]
@@ -1626,6 +1919,13 @@ window.__ModuleLoader__.load({
         const environments = Array.isArray(data.environments) ? data.environments : [];
         const clusters = Array.isArray(data.clusters) ? data.clusters : [];
         const apps = Array.isArray(data.apps) ? data.apps : [];
+        const issues = Array.isArray(data.issues) ? data.issues : [];
+        const errors = Array.isArray(data.errors) ? data.errors : [];
+        // Before openFuyao is installed the only actionable surface is the
+        // preflight/deploy card. Overview issues there are observation noise
+        // (missing kubeconfig, unreachable console), so the Issues section
+        // stays hidden until installation has produced real state.
+        const installed = ready || clusters.length > 0 || apps.length > 0;
 
         return h('div', { style: { padding: '0 12px 18px' } },
           ready
@@ -1708,6 +2008,56 @@ window.__ModuleLoader__.load({
                 ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
                   apps.map((app) => h(AppRow, { key: app.id, app, t })))
                 : h(Empty, null, t('emptyApps')))
+            : null,
+
+          (installed && (issues.length > 0 || errors.length > 0))
+            ? h(Section, {
+              title: t('issues'),
+              count: issues.length + errors.length,
+              action: issues.length > 0
+                ? h(AskButton, {
+                  label: Boolean(asked.__all__) ? t('askedDsh') : t('askAllShort'),
+                  title: sessionId ? t('askAll') : t('askNoSession'),
+                  disabled: !sessionId,
+                  asked: Boolean(asked.__all__),
+                  onClick: () => ask('__all__', buildAllIssuesPrompt(data, locale)),
+                })
+                : null,
+            },
+            h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+              askError
+                ? h('div', {
+                  style: {
+                    padding: '7px 9px', borderRadius: 7,
+                    border: '1px solid color-mix(in srgb, var(--dsw-alias-state-error-primary) 30%, var(--dsw-alias-border-l1))',
+                    background: 'color-mix(in srgb, var(--dsw-alias-state-error-primary) 7%, transparent)',
+                    fontSize: 11, lineHeight: '16px',
+                    color: 'var(--dsw-alias-state-error-primary)', overflowWrap: 'anywhere',
+                  },
+                }, askError)
+                : null,
+              issues.map((issue, index) => {
+                const key = issue.id || `${issue.code || 'issue'}-${index}`;
+                return h(IssueRow, {
+                  key,
+                  issue,
+                  t,
+                  canAsk: Boolean(sessionId),
+                  asked: Boolean(asked[key]),
+                  onAsk: () => ask(key, buildIssuePrompt(issue, data, locale)),
+                });
+              }),
+              errors.map((message, index) => {
+                const key = `error-${index}`;
+                return h(ErrorRow, {
+                  key,
+                  message,
+                  t,
+                  canAsk: Boolean(sessionId),
+                  asked: Boolean(asked[key]),
+                  onAsk: () => ask(key, buildErrorMessagePrompt(message, data, locale)),
+                });
+              })))
             : null);
       })();
 
