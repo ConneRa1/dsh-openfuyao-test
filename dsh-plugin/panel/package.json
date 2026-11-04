@@ -1,0 +1,44 @@
+{
+  "name": "@openwitty/dsh-openfuyao-panel",
+  "version": "0.1.0",
+  "description": "Right-sidebar openFuyao panel for DeepSeek Harness, rendered through dsh-better-sidebar.",
+  "type": "module",
+  "license": "MIT",
+  "icon": "icon.svg",
+  "engines": {
+    "node": ">=20",
+    "dsh": "^0.2.1-rc.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openwitty/witty-service.git",
+    "directory": "dsh-plugin/panel"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ]
+}

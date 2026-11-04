@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="openFuyao">
+  <defs>
+    <linearGradient id="g" x1="8" y1="8" x2="56" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2f7cf6"/>
+      <stop offset="1" stop-color="#0b3fa8"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#g)" d="M32 3.5 57 17v30L32 60.5 7 47V17L32 3.5Zm0 7.7L13.2 21.5v21L32 52.8l18.8-10.3v-21L32 11.2Z"/>
+  <circle cx="32" cy="21" r="4.2" fill="#fff"/>
+  <circle cx="20" cy="42" r="4.2" fill="#fff"/>
+  <circle cx="44" cy="42" r="4.2" fill="#fff"/>
+  <path fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" d="M32 25.2 22.4 38.4M32 25.2l9.6 13.2M24.2 42h15.6"/>
+</svg>

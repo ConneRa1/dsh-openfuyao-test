@@ -1,0 +1,8 @@
+- insert:
+    - id: openfuyao
+      name: '@openwitty/dsh-openfuyao'
+      config:
+        mode: auto
+        baseUrl: http://127.0.0.1:8000
+        agentName: openfuyao-deployer
+        requireApproval: true

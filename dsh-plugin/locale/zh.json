@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "openFuyao 部署",
+    "description": "在 DSH 中预检、部署和运维 openFuyao 环境、集群与应用；内置独立 sidecar，无需手动启动后端。"
+  }
+}

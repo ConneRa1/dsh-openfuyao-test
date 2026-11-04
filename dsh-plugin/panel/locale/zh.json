@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "openFuyao 面板",
+    "description": "在右侧边栏查看 openFuyao 环境、集群与应用；没有 ready 环境时执行宿主机预检并完成安装。"
+  }
+}

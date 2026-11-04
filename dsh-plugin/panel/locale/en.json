@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "openFuyao Panel",
+    "description": "Right-sidebar view of openFuyao: inspect environments, clusters, and applications, or run the host preflight and install it when no environment is ready."
+  }
+}

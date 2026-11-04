@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "openFuyao Deployment",
+    "description": "Preflight, deploy, and operate openFuyao environments, clusters, and applications from DSH, with a bundled sidecar and no manual backend startup."
+  }
+}
