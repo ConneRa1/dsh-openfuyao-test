@@ -30,6 +30,11 @@ on:
         description: 'Version to publish, without the tag prefix (e.g. 1.0.0)'
         required: true
         type: string
+      dry_run:
+        description: '只构建产物，不发布到 npm、不创建 release（沙箱/演练用）'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -127,6 +132,7 @@ jobs:
         run: ./scripts/package-dsh-plugin.sh
 
       - name: Publish platform package
+        if: inputs.dry_run != true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish "build/npm-pkg/${{ matrix.platform }}" --access public
@@ -183,6 +189,7 @@ jobs:
       # A failed *optional* dependency is only a warning for npm, so the Host
       # would install "successfully" and fail later with SIDECAR_BINARY_MISSING.
       - name: Verify the platform packages are published
+        if: inputs.dry_run != true
         run: |
           for pkg in \
             @openwitty/dsh-openfuyao-sidecar-linux-x64 \
@@ -198,11 +205,13 @@ jobs:
         run: npm test --prefix dsh-plugin
 
       - name: Publish panel
+        if: inputs.dry_run != true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish ./dsh-plugin/panel --access public
 
       - name: Publish Host
+        if: inputs.dry_run != true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish ./dsh-plugin --access public
@@ -210,7 +219,7 @@ jobs:
   release:
     name: Attach offline tarballs
     needs: [version, sidecar]
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && inputs.dry_run != true
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
