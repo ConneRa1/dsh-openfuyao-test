@@ -222,6 +222,11 @@ jobs:
     if: github.event_name == 'push' && inputs.dry_run != true
     runs-on: ubuntu-24.04
     steps:
+      # `gh` resolves the target repository through the local git remote. Without
+      # a checkout this job has no .git and every gh call dies with
+      # "failed to run git: fatal: not a git repository".
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           pattern: tarball-*
