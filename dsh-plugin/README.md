@@ -38,12 +38,14 @@ cp -a build/sidecar-dist/witty-openfuyao-sidecar dsh-plugin/sidecar
 
 ```text
 plugin_manager install_bundle target=/root/witty-service/dsh-plugin
-plugin_manager install_bundle target=/root/witty-service/dsh-plugin/panel
 ```
 
-第一个目标是 Host 半区（工具 + sidecar 所有权），第二个是 Client 半区（右侧边栏面板）。
-两者必须拆成两个 bundle：DSH 在启动时会缓存一个包的 `dsh.client` 元数据，一个已经以
-Host-only 方式挂载过的包，无法通过热重载补上 Client 半区。
+只装 Host 就够了：右侧边栏面板作为普通依赖随 Host 一起安装，由 Host 的
+`cordis.patch.yml` 同时插入 `openfuyao` 和 `openfuyao-panel` 两条 Loader 行。
+
+面板仍然是一个独立的 npm 包，因为 DSH 在启动时会缓存一个包的 `dsh.client` 元数据：
+把 Client 半区塞进 Host 包，已经以 Host-only 方式挂载过的 profile 就无法通过热重载
+补上面板。
 
 装完先确认工具注册成功，再用：
 

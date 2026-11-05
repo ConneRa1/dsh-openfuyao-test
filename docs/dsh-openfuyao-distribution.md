@@ -72,10 +72,12 @@ sudo chown -R "$USER" /opt/dsh-openfuyao
 
 ```text
 plugin_manager install_bundle target=/opt/dsh-openfuyao/dsh-plugin
-plugin_manager install_bundle target=/opt/dsh-openfuyao/dsh-plugin/panel
 ```
 
-安装完成后确认两条 profile 插件行是 active：
+面板不需要单独安装：Host 把 `@openwitty/dsh-openfuyao-panel` 作为普通依赖带入，
+并在自己的补丁里插入 `openfuyao-panel` 行。
+
+安装完成后确认 profile 插件行是 active：
 
 ```text
 plugin_manager list_bundles
@@ -85,7 +87,6 @@ plugin_manager list_bundles
 
 ```text
 @openwitty/dsh-openfuyao
-@openwitty/dsh-openfuyao-panel
 ```
 
 以及 `include:openfuyao`、`include:openfuyao-panel` 两条 Loader 行。
@@ -268,11 +269,11 @@ shell；工具和 CLI 最终调用同一个 REST 编排层。
 ## 7. 卸载
 
 ```text
-plugin_manager set_bundle target=@openwitty/dsh-openfuyao-panel enabled=false
 plugin_manager set_bundle target=@openwitty/dsh-openfuyao enabled=false
-plugin_manager remove_bundle target=@openwitty/dsh-openfuyao-panel
 plugin_manager remove_bundle target=@openwitty/dsh-openfuyao
 ```
+
+面板会作为 Host 的依赖一起移除。
 
 卸载前先停 sidecar（禁用 Host bundle 即可），确认 `pgrep -af
 witty-openfuyao-sidecar` 为空。`plugin-data/` 下的 sidecar 数据库不会自动删除，

@@ -25,9 +25,6 @@
   },
   "dsh": {
     "manifestVersion": 1,
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    },
     "client": {
       "platform": "web",
       "immediately": true
@@ -36,7 +33,6 @@
   "files": [
     "index.js",
     "client.js",
-    "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
     "README.md"

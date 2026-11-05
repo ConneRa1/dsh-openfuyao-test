@@ -165,25 +165,30 @@ jobs:
       # Everything is verified before the first publish. npm does not retract, so
       # a failure after `npm publish ./dsh-plugin/panel` would leave a version
       # behind that cannot be released again.
-      - name: Verify optional dependencies are pinned to this version
+      - name: Verify dependency pins point at this version
         run: |
           node -e '
             const host = require("./dsh-plugin/package.json");
             const expected = process.env.VERSION;
-            const pins = Object.entries(host.optionalDependencies ?? {});
-            if (pins.length === 0) {
+            const panel = "@mlt_123/dsh-openfuyao-panel-test";
+            const sidecars = Object.entries(host.optionalDependencies ?? {});
+            if (sidecars.length === 0) {
               console.error("optionalDependencies 为空：平台二进制不会被安装");
               process.exit(1);
             }
+            if (!host.dependencies?.[panel]) {
+              console.error("dependencies 缺少 panel：用户装上 Host 也不会有右侧栏");
+              process.exit(1);
+            }
             let failed = false;
-            for (const [name, range] of pins) {
+            for (const [name, range] of Object.entries({ ...host.dependencies, ...host.optionalDependencies })) {
               if (range !== expected) {
                 console.error(`${name} 钉在 "${range}"，应为 "${expected}"`);
                 failed = true;
               }
             }
             if (failed) process.exit(1);
-            console.error(`已校验 ${pins.length} 个平台包版本`);
+            console.error(`已校验 panel 与 ${sidecars.length} 个平台包的版本`);
           '
 
       # A failed *optional* dependency is only a warning for npm, so the Host

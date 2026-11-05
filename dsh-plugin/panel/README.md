@@ -29,15 +29,12 @@
 
 ## 安装
 
-```text
-plugin_manager install_bundle target=/root/witty-service/dsh-plugin/panel
-```
+不需要单独安装：Host 包（`dsh-openfuyao`）把本包作为普通依赖带入，并在自己的
+`cordis.patch.yml` 里插入 `openfuyao-panel` 行。装完 Host 后打开右侧边栏的 **+**
+菜单，选 **openFuyao / openFuyao 部署** 即可。
 
-然后打开右侧边栏的 **+** 菜单，选 **openFuyao / openFuyao 部署**。
-
-这个 bundle 之所以与 Host bundle 分开，是因为 DSH 在启动时会缓存一个包的 `dsh.client`
-元数据：给一个已经以 Host-only 方式挂载的包补 Client 半区，需要重启 DSH。装一个全新的包
-就绕开了这一点。
+本包仍与 Host 分成两个 npm 包，是因为 DSH 在启动时会缓存一个包的 `dsh.client` 元数据：
+给一个已经以 Host-only 方式挂载的包补 Client 半区，需要重启 DSH。
 
 依赖 `dsh-better-sidebar`。没有它时 Client 半区保持非激活（它注入 `betterSidebar`），而
 Host 工具仍然可用。

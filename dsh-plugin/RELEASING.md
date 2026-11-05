@@ -12,13 +12,17 @@
 | 包 | 内容 | 何时安装 |
 | --- | --- | --- |
 | `@openwitty/dsh-openfuyao` | Host：工具、审批、Host 路由 | 用户显式安装 |
-| `@openwitty/dsh-openfuyao-panel` | Client：右侧边栏 UI | 用户显式安装，版本必须与 Host 相同 |
+| `@openwitty/dsh-openfuyao-panel` | Client：右侧边栏 UI | 由 Host 的 `dependencies` 自动带入，版本必须与 Host 相同 |
 | `@openwitty/dsh-openfuyao-sidecar-linux-x64` | 预编译 sidecar | 由 Host 的 `optionalDependencies` 自动带入 |
 | `@openwitty/dsh-openfuyao-sidecar-linux-arm64` | 预编译 sidecar | 同上 |
 
 一个 npm 版本只能发布一次，而 sidecar 是 68 MB 的架构相关二进制——两个架构塞不进同一个
 tarball。拆成平台包后，`os` / `cpu` 字段让包管理器只装匹配的那一个，用户仍然只敲一条
 `dsh plugin add`。
+
+panel 同理：它是 Host 的普通 `dependencies`，Host 的 `cordis.patch.yml` 同时插入
+`openfuyao` 和 `openfuyao-panel` 两条 Loader 行。用户只装 Host，右侧栏就自动出现，
+不需要再手动 `install_bundle` panel 或往 `dsh.profile.bundles` 里加东西。
 
 ## 一次发布的实际流程
 

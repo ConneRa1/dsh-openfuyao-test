@@ -31,6 +31,9 @@
       "patch": "./cordis.patch.yml"
     }
   },
+  "dependencies": {
+    "@mlt_123/dsh-openfuyao-panel-test": "0.1.0"
+  },
   "optionalDependencies": {
     "@mlt_123/dsh-openfuyao-sidecar-linux-x64-test": "0.1.0",
     "@mlt_123/dsh-openfuyao-sidecar-linux-arm64-test": "0.1.0"

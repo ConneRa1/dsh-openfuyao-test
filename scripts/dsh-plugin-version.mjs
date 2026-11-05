@@ -32,6 +32,7 @@ const TAG_PREFIX = 'dsh-openfuyao-v';
 const PACKAGE_DIR = 'dsh-plugin';
 const HOST_MANIFEST = path.join(ROOT, PACKAGE_DIR, 'package.json');
 const PANEL_MANIFEST = path.join(ROOT, PACKAGE_DIR, 'panel', 'package.json');
+const PANEL_PACKAGE = '@mlt_123/dsh-openfuyao-panel-test';
 const SIDECAR_PACKAGES = [
   '@mlt_123/dsh-openfuyao-sidecar-linux-x64-test',
   '@mlt_123/dsh-openfuyao-sidecar-linux-arm64-test',
@@ -152,6 +153,10 @@ function apply(version) {
     // Exact pins, not ranges: the Host and the binary speak a protocol whose
     // version must match exactly (SIDECAR_API_VERSION), so a ranged optional
     // dependency could quietly resolve to an incompatible build.
+    // The panel is a regular dependency: users install one package and still
+    // get the sidebar UI, so this pin must move with every release.
+    manifest.dependencies ??= {};
+    manifest.dependencies[PANEL_PACKAGE] = version;
     manifest.optionalDependencies ??= {};
     for (const name of SIDECAR_PACKAGES) manifest.optionalDependencies[name] = version;
   });
