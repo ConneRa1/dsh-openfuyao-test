@@ -1,6 +1,6 @@
 - insert:
     - id: openfuyao
-      name: '@connera1/dsh-openfuyao-test'
+      name: '@mlt_123/dsh-openfuyao-test'
       config:
         mode: auto
         baseUrl: http://127.0.0.1:8000

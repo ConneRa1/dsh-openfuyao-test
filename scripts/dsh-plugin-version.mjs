@@ -33,8 +33,8 @@ const PACKAGE_DIR = 'dsh-plugin';
 const HOST_MANIFEST = path.join(ROOT, PACKAGE_DIR, 'package.json');
 const PANEL_MANIFEST = path.join(ROOT, PACKAGE_DIR, 'panel', 'package.json');
 const SIDECAR_PACKAGES = [
-  '@connera1/dsh-openfuyao-sidecar-linux-x64-test',
-  '@connera1/dsh-openfuyao-sidecar-linux-arm64-test',
+  '@mlt_123/dsh-openfuyao-sidecar-linux-x64-test',
+  '@mlt_123/dsh-openfuyao-sidecar-linux-arm64-test',
 ];
 
 const BUMP_RANK = { none: 0, patch: 1, minor: 2, major: 3 };

@@ -1,5 +1,5 @@
 {
-  "name": "@connera1/dsh-openfuyao-panel-test",
+  "name": "@mlt_123/dsh-openfuyao-panel-test",
   "version": "0.1.0",
   "description": "Right-sidebar openFuyao panel for DeepSeek Harness, rendered through dsh-better-sidebar.",
   "type": "module",

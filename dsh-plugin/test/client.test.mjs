@@ -45,7 +45,7 @@ test('the panel bundle registers one sidebar tab with symmetric locales', async 
   }
 
   assert.ok(definition, 'the bundle must register through window.__ModuleLoader__');
-  assert.equal(definition.id, '@connera1/dsh-openfuyao-panel-test');
+  assert.equal(definition.id, '@mlt_123/dsh-openfuyao-panel-test');
 
   const factoryResult = definition.factory((name) => {
     if (name === 'react') return React;

@@ -2,5 +2,5 @@
 # row to mount; the visible surface is the Client tab registered in client.js.
 - insert:
     - id: openfuyao-panel
-      name: '@connera1/dsh-openfuyao-panel-test'
+      name: '@mlt_123/dsh-openfuyao-panel-test'
       config: {}

@@ -42,8 +42,8 @@ const DEFAULT_BINARY = fileURLToPath(
  * with `scripts/make-sidecar-package.mjs`.
  */
 const PLATFORM_PACKAGES = {
-  'linux-x64': '@connera1/dsh-openfuyao-sidecar-linux-x64-test',
-  'linux-arm64': '@connera1/dsh-openfuyao-sidecar-linux-arm64-test',
+  'linux-x64': '@mlt_123/dsh-openfuyao-sidecar-linux-x64-test',
+  'linux-arm64': '@mlt_123/dsh-openfuyao-sidecar-linux-arm64-test',
 };
 
 const nodeRequire = createRequire(import.meta.url);
@@ -400,7 +400,7 @@ class Backend {
    *      after `scripts/build-sidecar.sh`, and the self-contained tarball
    *      distribution, which ships the binary inside the package.
    *   3. the platform package installed through `optionalDependencies` — what a
-   *      plain `dsh plugin add @connera1/dsh-openfuyao-test` produces.
+   *      plain `dsh plugin add @mlt_123/dsh-openfuyao-test` produces.
    */
   #resolveBinary() {
     const attempts = this.#sidecarCandidates();

@@ -3,7 +3,7 @@
  * Stage one prebuilt sidecar into an npm platform package.
  *
  * The sidecar is ~70 MB and architecture specific, so it cannot live inside
- * `@connera1/dsh-openfuyao-test` itself: one version of an npm package can only be
+ * `@mlt_123/dsh-openfuyao-test` itself: one version of an npm package can only be
  * published once, and two architectures would collide. Each build instead
  * produces its own package, and the `os` / `cpu` fields make npm install only
  * the one that matches the host.
@@ -86,11 +86,11 @@ fs.cpSync(distDir, path.join(outDir, 'sidecar'), { recursive: true });
 const stagedBinary = path.join(outDir, 'sidecar', BINARY_NAME);
 fs.chmodSync(stagedBinary, 0o755);
 
-const name = `@connera1/dsh-openfuyao-sidecar-${platform.suffix}-test`;
+const name = `@mlt_123/dsh-openfuyao-sidecar-${platform.suffix}-test`;
 const manifest = {
   name,
   version: args.version,
-  description: `Prebuilt openFuyao sidecar for ${platform.os}/${platform.cpu}, used by @connera1/dsh-openfuyao-test.`,
+  description: `Prebuilt openFuyao sidecar for ${platform.os}/${platform.cpu}, used by @mlt_123/dsh-openfuyao-test.`,
   license: 'MIT',
   os: [platform.os],
   cpu: [platform.cpu],
