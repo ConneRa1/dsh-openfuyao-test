@@ -1,5 +1,5 @@
 {
-  "name": "@openwitty/dsh-openfuyao",
+  "name": "@connera1/dsh-openfuyao-test",
   "version": "0.1.0",
   "description": "openFuyao deployment tools for DeepSeek Harness, with a bundled headless sidecar.",
   "type": "module",
@@ -32,8 +32,8 @@
     }
   },
   "optionalDependencies": {
-    "@openwitty/dsh-openfuyao-sidecar-linux-x64": "0.1.0",
-    "@openwitty/dsh-openfuyao-sidecar-linux-arm64": "0.1.0"
+    "@connera1/dsh-openfuyao-sidecar-linux-x64-test": "0.1.0",
+    "@connera1/dsh-openfuyao-sidecar-linux-arm64-test": "0.1.0"
   },
   "files": [
     "index.js",

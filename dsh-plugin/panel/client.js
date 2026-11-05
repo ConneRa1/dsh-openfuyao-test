@@ -13,7 +13,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: '@openwitty/dsh-openfuyao-panel',
+  id: '@connera1/dsh-openfuyao-panel-test',
   factory(require) {
     const React = require('react');
     const h = React.createElement;

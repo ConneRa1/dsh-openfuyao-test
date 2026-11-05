@@ -2,10 +2,10 @@ name: Release DSH openFuyao plugin
 
 # Publishes the four npm packages that make up the DSH plugin:
 #
-#   @openwitty/dsh-openfuyao                       Host tools, approval gate, Host routes
-#   @openwitty/dsh-openfuyao-panel                 right-sidebar UI (client bundle)
-#   @openwitty/dsh-openfuyao-sidecar-linux-x64     prebuilt sidecar
-#   @openwitty/dsh-openfuyao-sidecar-linux-arm64   prebuilt sidecar
+#   @connera1/dsh-openfuyao-test                       Host tools, approval gate, Host routes
+#   @connera1/dsh-openfuyao-panel-test                 right-sidebar UI (client bundle)
+#   @connera1/dsh-openfuyao-sidecar-linux-x64-test     prebuilt sidecar
+#   @connera1/dsh-openfuyao-sidecar-linux-arm64-test   prebuilt sidecar
 #
 # The sidecar ships as separate platform packages because one npm version can
 # only be published once: two architectures cannot share a single tarball. The
@@ -192,8 +192,8 @@ jobs:
         if: inputs.dry_run != true
         run: |
           for pkg in \
-            @openwitty/dsh-openfuyao-sidecar-linux-x64 \
-            @openwitty/dsh-openfuyao-sidecar-linux-arm64; do
+            @connera1/dsh-openfuyao-sidecar-linux-x64-test \
+            @connera1/dsh-openfuyao-sidecar-linux-arm64-test; do
             if ! npm view "${pkg}@${VERSION}" version >/dev/null 2>&1; then
               echo "平台包尚未发布：${pkg}@${VERSION}" >&2
               exit 1
@@ -236,5 +236,5 @@ jobs:
           gh release view "$TAG" >/dev/null 2>&1 \
             || gh release create "$TAG" --verify-tag \
                  --title "DSH openFuyao plugin ${TAG#dsh-openfuyao-v}" \
-                 --notes "npm: \`@openwitty/dsh-openfuyao@${TAG#dsh-openfuyao-v}\`"
+                 --notes "npm: \`@connera1/dsh-openfuyao-test@${TAG#dsh-openfuyao-v}\`"
           gh release upload "$TAG" release/* --clobber

@@ -1,6 +1,6 @@
 /**
  * The panel bundle has no Host behaviour: the openFuyao data route and sidecar
- * ownership stay in @openwitty/dsh-openfuyao. This row only mounts the Client
+ * ownership stay in @connera1/dsh-openfuyao-test. This row only mounts the Client
  * half so the browser bundle is composed into window.__DSH_BOOT__.
  */
 
