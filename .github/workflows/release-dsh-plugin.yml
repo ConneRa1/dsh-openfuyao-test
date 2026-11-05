@@ -188,17 +188,34 @@ jobs:
 
       # A failed *optional* dependency is only a warning for npm, so the Host
       # would install "successfully" and fail later with SIDECAR_BINARY_MISSING.
+      #
+      # Every freshly published version goes through npm's automated review
+      # ("Validating" on the package page) and stays unresolvable until it
+      # clears, so poll instead of checking once.
       - name: Verify the platform packages are published
         if: inputs.dry_run != true
         run: |
-          for pkg in \
-            @mlt_123/dsh-openfuyao-sidecar-linux-x64-test \
-            @mlt_123/dsh-openfuyao-sidecar-linux-arm64-test; do
-            if ! npm view "${pkg}@${VERSION}" version >/dev/null 2>&1; then
-              echo "平台包尚未发布：${pkg}@${VERSION}" >&2
+          packages=(
+            @mlt_123/dsh-openfuyao-sidecar-linux-x64-test
+            @mlt_123/dsh-openfuyao-sidecar-linux-arm64-test
+          )
+          deadline=$((SECONDS + 1800))
+          while :; do
+            missing=()
+            for pkg in "${packages[@]}"; do
+              npm view "${pkg}@${VERSION}" version --prefer-online >/dev/null 2>&1 \
+                || missing+=("${pkg}")
+            done
+            if [ "${#missing[@]}" -eq 0 ]; then
+              echo "平台包已全部可解析：${packages[*]}@${VERSION}"
+              break
+            fi
+            if [ "${SECONDS}" -ge "${deadline}" ]; then
+              echo "等待 30 分钟仍未通过 npm 自动审核：${missing[*]}@${VERSION}" >&2
               exit 1
             fi
-            echo "已找到 ${pkg}@${VERSION}"
+            echo "等待 npm 自动审核（Validating）：${missing[*]}"
+            sleep 20
           done
 
       - name: Run the plugin tests
